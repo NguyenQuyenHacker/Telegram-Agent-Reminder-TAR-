@@ -1,7 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.config import settings
-from app.core.datetime_utils import is_overdue_by_days, next_morning_8am, to_local
+from app.core.datetime_utils import (
+    is_due_within_days,
+    is_overdue_by_days,
+    next_window_start,
+    to_local,
+)
 from persistence.models.task import Priority, Task, TaskStatus
 
 _INTERVAL_TABLE = {
@@ -14,15 +19,23 @@ _INTERVAL_TABLE = {
 
 def interval_for(priority: Priority, state: TaskStatus) -> int:
     """R3: bảng nhịp nhắc, đọc từ cấu hình chứ không hard-code."""
-    key = (priority, TaskStatus.snoozed if state == TaskStatus.snoozed else TaskStatus.pending)
-    return getattr(settings, _INTERVAL_TABLE[key])
+    # Chỉ snoozed có nhịp riêng, mọi trạng thái còn lại dùng nhịp của pending
+    normalized = state if state == TaskStatus.snoozed else TaskStatus.pending
+    return getattr(settings, _INTERVAL_TABLE[priority, normalized])
 
 
 def maybe_escalate(task: Task, reference_dt: datetime) -> Priority:
-    """R4: việc thường quá hạn từ 1 ngày trở lên thì nâng lên ưu tiên."""
+    """R4: việc thường được nâng lên ưu tiên khi quá hạn, hoặc khi sắp tới hạn.
+
+    Ba nguồn dẫn tới urgent — gốc đã urgent, sắp tới hạn, đã quá hạn — đều ra
+    cùng một mức. Nguyên nhân không lưu lại ở đây; tin nhắn nhắc tự nói ra qua
+    dòng hạn ("Còn 2 ngày" hay "Quá hạn 22 ngày").
+    """
     if task.priority == Priority.urgent:
         return Priority.urgent
     if is_overdue_by_days(task.due_date, reference_dt, settings.escalation_overdue_days):
+        return Priority.urgent
+    if is_due_within_days(task.due_date, reference_dt, settings.escalation_due_soon_days):
         return Priority.urgent
     return Priority.normal
 
@@ -41,14 +54,13 @@ def clamp_to_window(dt: datetime) -> datetime:
             hour=settings.reminder_window_start_hour, minute=0, second=0, microsecond=0
         )
     if local.hour >= settings.reminder_window_end_hour:
-        return next_morning_8am(local)
+        return next_window_start(local)
     return local
 
 
 def compute_next_remind_at(
     priority: Priority, state: TaskStatus, reference_dt: datetime
 ) -> datetime:
-    from datetime import timedelta
-
+    """Mốc nhắc kế tiếp: cộng nhịp tương ứng rồi kéo về trong khung giờ."""
     raw = to_local(reference_dt) + timedelta(minutes=interval_for(priority, state))
     return clamp_to_window(raw)

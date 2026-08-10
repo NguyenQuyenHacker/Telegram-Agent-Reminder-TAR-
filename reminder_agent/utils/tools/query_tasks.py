@@ -3,7 +3,7 @@ from datetime import date
 
 from langchain_core.tools import tool
 
-from app.core.datetime_utils import now_local
+from app.core.datetime_utils import now_local, weekday_vi
 from persistence.models.task import Priority, TaskStatus
 from persistence.proc.tasks import query_tasks as _query_tasks
 
@@ -40,6 +40,7 @@ async def query_tasks(
             "group": t.group,
             "content": t.content,
             "due_date": t.due_date.isoformat() if t.due_date else None,
+            "due_weekday": weekday_vi(t.due_date) if t.due_date else None,
             "days_left": (t.due_date - today).days if t.due_date else None,
             "priority": t.priority.value,
             "status": t.status.value,

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     normal_pending_interval_min: int = 30
     normal_snoozed_interval_min: int = 60
     escalation_overdue_days: int = 1
+    # Còn ngần này ngày (hoặc ít hơn) tới hạn mà chưa xong thì cũng nâng ưu tiên
+    escalation_due_soon_days: int = 3
 
     reminder_window_start_hour: int = 8
     reminder_window_end_hour: int = 18

@@ -16,9 +16,21 @@ _retry = retry(
 
 @_retry
 async def send_message(
-    chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
+    chat_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
 ) -> Message:
-    return await bot.send_message(chat_id, text, reply_markup=reply_markup)
+    """Mặc định gửi text thuần.
+
+    Không bật parse_mode toàn cục ở Bot(): hàm này còn gửi câu trả lời của LLM
+    và nguyên văn báo cáo người dùng: chỉ cần một dấu '<' hay '&' lọt vào là
+    Telegram trả 400 và tin nhắn mất luôn. Nơi nào tự dựng HTML thì tự khai
+    parse_mode="HTML", và tự escape phần nội dung động.
+    """
+    return await bot.send_message(
+        chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
+    )
 
 
 @_retry

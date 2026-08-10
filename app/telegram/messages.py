@@ -1,7 +1,28 @@
+import re
 from datetime import datetime
+from html import escape
 
 from app.core.datetime_utils import to_local
 from persistence.models.task import Priority, Task
+
+# "(hạn 20/8)", "(Hạn: 20/8)", "(hết hạn 20/8)" — mọi biến thể trong ngoặc đơn
+_INLINE_DUE = re.compile(r"\s*\(\s*(?:hết\s+)?hạn\b[^)]*\)", re.IGNORECASE)
+
+# reminder_text dựng HTML nên nơi gọi phải gửi kèm parse_mode này. Khai ở đây
+# để hai thứ nằm cạnh nhau, đổi định dạng không quên đổi chỗ gọi.
+REMINDER_PARSE_MODE = "HTML"
+
+
+def _display_content(task: Task) -> str:
+    """Nội dung đã gọt phần trùng lặp với các dòng khác của tin nhắn.
+
+    DB cố tình lưu nguyên văn dòng báo cáo (rule 4 của prompt trích) để còn đối
+    chiếu lại được. Việc gọt là chuyện của lớp hiển thị: "ƯU TIÊN:" đã có badge
+    nói hộ, "(hạn 20/8)" đã có dòng 📅 nói hộ.
+    """
+    content = task.content.removeprefix("ƯU TIÊN:")
+    content = _INLINE_DUE.sub("", content)
+    return content.strip(" -–—:")
 
 
 def _due_line(task: Task, now: datetime) -> str:
@@ -9,19 +30,32 @@ def _due_line(task: Task, now: datetime) -> str:
         return "📅 Chưa có hạn"
     today = to_local(now).date()
     delta = (task.due_date - today).days
-    stamp = task.due_date.strftime("%d/%m")
+    stamp = f"📅 Hạn {task.due_date.strftime('%d/%m')}"
     if delta < 0:
-        return f"⏰ Quá hạn {abs(delta)} ngày ({stamp})"
+        return f"{stamp} · ⏰ Quá hạn {abs(delta)} ngày"
     if delta == 0:
-        return f"⏰ Hạn chót hôm nay ({stamp})"
-    return f"⏰ Còn {delta} ngày ({stamp})"
+        return f"{stamp} · ⏰ Hạn chót hôm nay"
+    return f"{stamp} · ⏳ Còn {delta} ngày"
 
 
 def reminder_text(task: Task, now: datetime, priority: Priority | None = None) -> str:
+    """Tin nhắn nhắc việc, định dạng HTML.
+
+    group và content là dữ liệu người dùng nhập nên phải escape: một dấu '<'
+    trong tên nhóm là đủ để Telegram từ chối cả tin nhắn.
+    """
     effective = priority or task.priority
-    badge = "🔴 ƯU TIÊN" if effective == Priority.urgent else "🔵"
-    content = task.content.removeprefix("ƯU TIÊN:").strip()
-    return f"{badge} · {task.group}\n{content}\n{_due_line(task, now)}"
+    group = escape(task.group, quote=False)
+    content = escape(_display_content(task), quote=False)
+
+    # Việc gấp: nhãn tách hẳn ra dòng riêng cho đập vào mắt. Việc thường không
+    # cần dòng đó, chấm màu đứng luôn trước tên nhóm cho gọn.
+    if effective == Priority.urgent:
+        header = f"🔴 <b>ƯU TIÊN</b>\n📁 {group}"
+    else:
+        header = f"🔵 {group}"
+
+    return f"{header}\n\n<b>{content}</b>\n{_due_line(task, now)}"
 
 
 def done_confirmation_text(task: Task) -> str:

@@ -28,7 +28,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from app.core.datetime_utils import now_local
+from app.core.datetime_utils import now_local, weekday_vi
 from app.core.priority import clamp_to_window, interval_for
 from app.telegram.messages import (
     abandoned_text,
@@ -189,9 +189,17 @@ class ReminderAgent:
 
     async def call_model(self, state: GraphState) -> dict:
         history = self._recent_history(state)
+        # Nhánh này cũng cần mốc ngày như nhánh trích: không có thì "20/7" của
+        # người dùng bị model gán một năm tự nghĩ ra, tra DB không ra gì.
+        today = now_local().date()
+        system_prompt = load_prompt(
+            "agent_system",
+            TODAY=today.isoformat(),
+            TODAY_WEEKDAY=weekday_vi(today),
+        )
         response = await self.qa_assistant.ainvoke(
             {
-                "system": [SystemMessage(content=load_prompt("agent_system"))],
+                "system": [SystemMessage(content=system_prompt)],
                 "messages": history,
             }
         )

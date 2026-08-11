@@ -17,11 +17,13 @@ _INTERVAL_TABLE = {
 }
 
 
-def interval_for(priority: Priority, state: TaskStatus) -> int:
+def interval_for(priority: Priority, task_status: TaskStatus) -> int:
     """R3: bảng nhịp nhắc, đọc từ cấu hình chứ không hard-code."""
     # Chỉ snoozed có nhịp riêng, mọi trạng thái còn lại dùng nhịp của pending
-    normalized = state if state == TaskStatus.snoozed else TaskStatus.pending
-    return getattr(settings, _INTERVAL_TABLE[priority, normalized])
+    lookup_status = (
+        task_status if task_status == TaskStatus.snoozed else TaskStatus.pending
+    )
+    return getattr(settings, _INTERVAL_TABLE[priority, lookup_status])
 
 
 def maybe_escalate(task: Task, reference_dt: datetime) -> Priority:
@@ -40,27 +42,29 @@ def maybe_escalate(task: Task, reference_dt: datetime) -> Priority:
     return Priority.normal
 
 
-def is_within_send_window(dt: datetime) -> bool:
+def is_within_send_window(moment: datetime) -> bool:
     """R6: chỉ nhắc trong khung giờ đã cấu hình."""
-    hour = to_local(dt).hour
+    hour = to_local(moment).hour
     return settings.reminder_window_start_hour <= hour < settings.reminder_window_end_hour
 
 
-def clamp_to_window(dt: datetime) -> datetime:
+def clamp_to_window(moment: datetime) -> datetime:
     """R6: mốc rơi ngoài khung giờ thì dồn về đầu khung ngày kế tiếp."""
-    local = to_local(dt)
-    if local.hour < settings.reminder_window_start_hour:
-        return local.replace(
+    local_moment = to_local(moment)
+    if local_moment.hour < settings.reminder_window_start_hour:
+        return local_moment.replace(
             hour=settings.reminder_window_start_hour, minute=0, second=0, microsecond=0
         )
-    if local.hour >= settings.reminder_window_end_hour:
-        return next_window_start(local)
-    return local
+    if local_moment.hour >= settings.reminder_window_end_hour:
+        return next_window_start(local_moment)
+    return local_moment
 
 
 def compute_next_remind_at(
-    priority: Priority, state: TaskStatus, reference_dt: datetime
+    priority: Priority, task_status: TaskStatus, reference_dt: datetime
 ) -> datetime:
     """Mốc nhắc kế tiếp: cộng nhịp tương ứng rồi kéo về trong khung giờ."""
-    raw = to_local(reference_dt) + timedelta(minutes=interval_for(priority, state))
-    return clamp_to_window(raw)
+    unclamped = to_local(reference_dt) + timedelta(
+        minutes=interval_for(priority, task_status)
+    )
+    return clamp_to_window(unclamped)

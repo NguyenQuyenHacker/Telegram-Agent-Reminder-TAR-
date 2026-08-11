@@ -14,5 +14,8 @@ python-dateutil==2.9.0.post0
 tenacity==9.0.0
 pyyaml==6.0.2
 # Tuỳ chọn: sửa prompt trên UI + trace agent. Không cài thì code tự dùng prompt .md.
-# KHÔNG cài gói `langchain` — bản 1.x xung đột với langchain-core 0.3.x.
-# langfuse==3.0.0
+# Muốn có TRACE thì phải cài kèm gói `langchain`: langfuse.langchain.CallbackHandler
+# import từ đó, langchain-core không đủ. Chốt <0.4 — bản 1.x mới là bản xung đột
+# với langchain-core 0.3.x. Chỉ cần sửa prompt trên UI thì không cần langchain.
+# langfuse>=3.0.0
+# langchain>=0.3,<0.4

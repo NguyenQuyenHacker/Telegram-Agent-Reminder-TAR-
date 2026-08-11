@@ -29,20 +29,45 @@ không cần suy luận, cho LLM vào đó chỉ thêm độ trễ, thêm chi ph
 
 ```
                               ┌─ có "Tiếp theo:" ─→ extract_tasks ──→ ask_confirm
-tin nhắn ─→ classify_message ─┤                          ↑                 │
-                              └─ còn lại ────→ agent     │            (interrupt,
-                                                ↕        │             chờ người dùng)
-                                              tools      │                 │
-                                                ↓        └── sửa lại ──────┤
-                                              answer                       ↓
-                                                                       save_to_db
+tin nhắn ─→ classify_message ─┤                        ↑   ↑         (interrupt,
+                              └─ còn lại ──→ agent     │   │        chờ người dùng)
+                                              ↕        │   │              │
+                                            tools      │   │              ↓
+                                              ↓        │   └─ chưa rõ ─ read_decision
+                                            answer     └───── sửa lại ────┤
+                                                                          ↓
+                                                                      save_to_db
 ```
 
 Điểm đáng chú ý: nhánh báo cáo **dừng lại chờ người duyệt** bằng `interrupt()`.
 Bảng đầu việc không có nút bấm — bạn trả lời bằng tin nhắn thường ("ok",
-"thiếu việc số 3", "thôi bỏ đi"), một LLM riêng đọc ý định đó rồi mới resume
-graph. Muốn sửa thì graph quay lại chính node `extract_tasks` với yêu cầu sửa
-kèm theo, trích lại từ đầu.
+"thiếu việc số 3", "thôi bỏ đi"), và node `read_decision` dùng một LLM riêng để
+đọc ý định đó. Muốn sửa thì graph quay lại chính node `extract_tasks` với yêu
+cầu sửa kèm theo, trích lại từ đầu; trả lời chưa rõ ý thì quay về `ask_confirm`
+hỏi lại, bảng vẫn treo chờ.
+
+### Mỗi tin nhắn là một lần chạy graph
+
+`interrupt()` không phải "tạm dừng" — nó ghi checkpoint rồi **thoát hẳn** khỏi
+`ainvoke`. Giữa hai tin nhắn của bạn, không có tiến trình nào ngủ chờ, không tốn
+RAM; toàn bộ tiến độ nằm trong bảng checkpoint ở Postgres, khoá theo
+`thread_id = chat_id`. Server restart giữa chừng cũng không mất bảng đầu việc.
+
+Nên một lượt duyệt gồm nhiều lần `ainvoke` độc lập, mỗi lần vào graph ở một chỗ
+khác nhau:
+
+| Bạn nhắn | Webhook gọi | Graph chạy từ đâu |
+|---|---|---|
+| dán báo cáo | `ainvoke({...state mới...})` | `START` → `extract_tasks` |
+| "sửa việc 3" | `ainvoke(Command(resume=...))` | `ask_confirm` → `read_decision` → `extract_tasks` |
+| "ok" | `ainvoke(Command(resume=...))` | `ask_confirm` → `read_decision` → `save_to_db` |
+
+Hệ quả quan trọng khi sửa code: **node chứa `interrupt()` chạy lại từ dòng đầu
+mỗi lần resume**, vì Python không lưu được trạng thái nửa chừng của một hàm. Lần
+resume thì `interrupt()` trả về ngay thay vì dừng. Vì vậy `ask_confirm` cố ý
+rỗng — chỉ mỗi `interrupt()` — còn gọi LLM và gửi tin nhắn đẩy hết sang
+`read_decision`, node thường nên chạy đúng một lần. Đặt side effect nhầm vào
+`ask_confirm` là mỗi câu trả lời tốn thêm một lời gọi LLM và một tin nhắn lặp.
 
 ## Quy tắc nghiệp vụ
 
@@ -55,7 +80,7 @@ bằng cách grep số hiệu.
 | R3 | Nhịp nhắc tra theo bảng (ưu tiên × trạng thái), đọc từ cấu hình | `app/core/priority.py` |
 | R4 | Việc thường tự nâng lên ưu tiên khi quá hạn, hoặc khi sắp tới hạn | `app/core/priority.py` |
 | R6 | Chỉ nhắc trong khung giờ cho phép, ngoài giờ thì dồn sang sáng hôm sau | `app/core/priority.py` |
-| R7 | `task_id` = hash(nhóm + nội dung), nên đồng bộ lại không tạo bản trùng | `reminder_agent/graph.py` |
+| R7 | `task_id` = hash(nhóm + nội dung đã bỏ `(hạn ...)`), nên gửi lại báo cáo — kể cả khi đã sửa hạn — chỉ cập nhật chứ không tạo bản trùng | `app/core/task_text.py` + `reminder_agent/graph.py` |
 | R8 | Chỉ hoàn tác được trong vòng 24 giờ kể từ lúc đánh dấu xong | `persistence/proc/tasks.py` |
 | R9 | Không đoán hạn; việc thiếu hạn thì hỏi lại đúng một lần | `prompts/extract_system.md` |
 
@@ -63,7 +88,7 @@ bằng cách grep số hiệu.
 
 ```
 app/                     Tầng ứng dụng — FastAPI, Telegram, lịch chạy
-  core/                  Cấu hình, thời gian, quy tắc ưu tiên, bảo mật webhook
+  core/                  Cấu hình, thời gian, quy tắc ưu tiên, chuẩn hoá nội dung việc
   routers/webhooks.py    Nhận update từ Telegram
   scheduler/runner.py    APScheduler: Job A + dọn checkpoint
   services/              Job A (reminder_service), Job B (callback_service)
@@ -169,13 +194,54 @@ vào cả nhánh trích lẫn nhánh hỏi đáp qua `{{TODAY}}` — thiếu nó
 năm cho những chuỗi kiểu "19/7". Thứ trong tuần thì Python tính sẵn rồi đưa vào
 kết quả tool (`due_weekday`), không để LLM tự suy từ ngày.
 
-**Langfuse (tuỳ chọn).** Đặt `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` thì
+> Prompt sửa ở `.md` **không** kích hoạt reload của uvicorn (nó chỉ theo dõi
+> `*.py`), và `load_prompt` có cache. Sửa xong phải khởi động lại tiến trình.
+
+## Langfuse (tuỳ chọn)
+
+Đặt `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` thì
 prompt được lấy từ Langfuse (label `production`) và toàn bộ lời gọi graph được
 trace. Không đặt thì dùng file `.md`, không trace. Mất mạng hay sai khoá cũng
 không làm chết agent — Langfuse tự rơi về bản `.md`.
 
-> Prompt sửa ở `.md` **không** kích hoạt reload của uvicorn (nó chỉ theo dõi
-> `*.py`), và `load_prompt` có cache. Sửa xong phải khởi động lại tiến trình.
+Hai chức năng, hai mức phụ thuộc khác nhau:
+
+| Muốn gì | Cần cài |
+|---|---|
+| Sửa prompt trên UI | `langfuse` |
+| Thêm cả **trace** | `langfuse` **và** `langchain` |
+
+Chỗ dễ mất thời gian: `langfuse.langchain.CallbackHandler` import từ gói
+`langchain`, `langchain-core` sẵn có trong `requirements.txt` **không đủ**. Thiếu
+nó thì `_with_tracing` nuốt `ModuleNotFoundError` và log cảnh báo rồi chạy tiếp
+không trace — bot vẫn hoạt động bình thường nên rất dễ tưởng là đã bật.
+
+```bash
+pip install "langfuse>=3.0.0" "langchain>=0.3,<0.4"
+```
+
+`app/main.py` gọi `load_dotenv()` chính vì Langfuse: pydantic-settings đọc `.env`
+để điền field của `Settings` nhưng **không ghi vào `os.environ`**, mà Langfuse
+lại đọc thẳng `os.getenv("LANGFUSE_*")`. Thiếu dòng đó thì khoá có trong `.env`
+vẫn coi như không có.
+
+### Đọc trace
+
+Trace được cắt theo **mỗi lần `ainvoke`**, tức mỗi tin nhắn Telegram một trace
+riêng — xem bảng ở mục [Mỗi tin nhắn là một lần chạy graph](#mỗi-tin-nhắn-là-một-lần-chạy-graph).
+Trace của một lượt resume mở đầu bằng `__start__ → ask_confirm`; đó là điểm vào
+của lượt đó chứ không phải node `START` của graph.
+
+Vài thứ cố ý **không** xuất hiện trong trace:
+
+- `classify_message` — chạy ở webhook, trước khi vào graph, và chỉ so keyword nên
+  không có gì để xem.
+- `route_entry` / `route_after_confirm` — hàm điều hướng không phải node, chỉ
+  hiện ra dưới dạng mũi tên.
+- `_write` — span nội bộ của LangGraph khi ghi state, bỏ qua được.
+
+View **Expanded** vẽ đúng những node đã chạy trong trace đó; muốn nhìn toàn bộ
+định nghĩa graph thì chuyển sang **Aggregated**.
 
 ## Triển khai
 

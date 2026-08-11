@@ -10,8 +10,8 @@ với **hai nhánh tách rời hoàn toàn** — không nhánh nào gọi sang n
 | Có tool không | Không | Có (2 tool đọc DB) |
 | Có dừng chờ người không | **Có** — `interrupt()` | Không |
 | Ghi dữ liệu | Có (`report`, `task`) | Không, chỉ đọc |
-| Số lần gọi LLM | 1 mỗi lượt trích | 1–4 (kể cả vòng gọi tool) |
-| Node | `extract_tasks`, `ask_confirm`, `save_to_db` | `agent`, `tools`, `answer` |
+| Số lần gọi LLM | 1 mỗi lượt trích + 1 mỗi lượt đọc ý người duyệt | 1–4 (kể cả vòng gọi tool) |
+| Node | `extract_tasks`, `ask_confirm`, `read_decision`, `save_to_db` | `agent`, `tools`, `answer` |
 
 Mã nguồn: [`reminder_agent/graph.py`](../reminder_agent/graph.py)
 
@@ -38,8 +38,7 @@ flowchart TD
     TG([Tin nhắn Telegram]) --> WH[webhook / polling<br/>handle_text_message]
     WH --> AWAIT{Graph đang treo ở<br/>ask_confirm?}
 
-    AWAIT -->|Có| DEC[parse_free_text_decision<br/>LLM đọc ý định]
-    DEC --> RESUME[[RESUME luồng 1]]
+    AWAIT -->|Có| RESUME[[RESUME luồng 1<br/>Command resume = nguyên văn tin nhắn]]
 
     AWAIT -->|Không| CLS{classify_message<br/>so khớp chuỗi}
     CLS -->|có 'Tiếp theo:'| L1[[LUỒNG 1 — Báo cáo]]
@@ -54,11 +53,15 @@ Thứ tự kiểm tra rất quan trọng: **luôn hỏi "có đang treo không" 
 dùng gõ "ok" khi đang chờ duyệt là câu trả lời cho bảng đầu việc, không phải
 câu hỏi mới — kiểm tra ngược lại sẽ đẩy "ok" vào nhánh hỏi đáp.
 
-Điểm vào graph ([`_entry`](../reminder_agent/graph.py)) chỉ nhìn một trường:
+Điểm vào graph ([`route_entry`](../reminder_agent/graph.py)) chỉ nhìn một trường:
 
 ```python
-def _entry(self, state):
-    return "extract_tasks" if state.get("raw_report_text") else "agent"
+def route_entry(self, state):
+    return "report" if state.get("raw_report_text") else "qa"
+
+builder.add_conditional_edges(
+    START, self.route_entry, {"report": "extract_tasks", "qa": "agent"}
+)
 ```
 
 ---
@@ -79,10 +82,12 @@ flowchart TD
     EX5 --> ASK[ask_confirm]
     ASK --> INT{{"interrupt() — GRAPH DỪNG<br/>checkpoint ghi xuống Postgres"}}
 
-    INT -.->|người dùng nhắn lại,<br/>có thể sau nhiều giờ| RT{route_after_confirm}
+    INT -.->|người dùng nhắn lại,<br/>có thể sau nhiều giờ| RD[read_decision<br/>LLM đọc ý người duyệt]
+    RD --> RT{route_after_confirm}
 
     RT -->|approved| SAVE[save_to_db]
     RT -->|edit + có edit_request| EX
+    RT -->|unclear — hỏi lại| ASK
     RT -->|abandoned| END1([END])
 
     SAVE --> S1[(upsert_task theo task_id)]
@@ -95,7 +100,7 @@ flowchart TD
     style INT fill:#fef7e0,stroke:#f9ab00,stroke-width:2px
 ```
 
-### Ba node
+### Bốn node
 
 **1. `extract_tasks`** — gọi LLM với `ExtractionResult` làm schema bắt buộc, nên
 kết quả luôn đúng hình dạng, không phải parse chuỗi. Prompt được bơm `{{TODAY}}`
@@ -109,33 +114,51 @@ Hai chi tiết dễ sai nếu viết lại:
   chạy lại từ đầu mỗi lần resume, đặt `send_message` trong đó thì người dùng nhận
   lại bảng cũ sau mỗi câu trả lời.
 
-**2. `ask_confirm`** — chốt chặn người duyệt:
+**2. `ask_confirm`** — chốt chặn người duyệt, và **không làm gì khác**:
 
 ```python
-decision = interrupt({"awaiting": "confirm", "tasks": state.get("extracted_tasks", [])})
+reply = interrupt({"awaiting": "confirm", "tasks": state.get("extracted_tasks", [])})
+return {"confirm_reply": reply}
 ```
 
 `interrupt()` **dừng hẳn** graph, ghi toàn bộ state xuống checkpoint Postgres rồi
 trả quyền điều khiển về. Tiến trình có thể restart, hôm sau người dùng trả lời
 thì graph chạy tiếp đúng chỗ cũ — trạng thái nằm ở DB chứ không nằm trong RAM.
 
+Node này trống rỗng là **có chủ đích**: nó chạy lại từ đầu mỗi lần resume, nên
+mọi side effect đặt vào đây đều lặp lại một lần cho mỗi câu trả lời.
+
+**3. `read_decision`** — đọc nguyên văn câu trả lời thành ý định.
+
 Bảng đầu việc **không có nút bấm**. Người dùng trả lời tự do, và một LLM riêng
 (`decision`, xem `decision_system.md`) đọc ý định thành `approved` / `edit` /
 `abandoned` / `unclear`.
 
-**3. `save_to_db`** — `upsert_task` theo `task_id = sha256(nhóm + nội dung)[:16]`
+Tách khỏi `ask_confirm` vì hai lý do: (a) node thường chạy đúng một lần nên
+không tốn lời gọi LLM thừa, (b) nằm trong graph nên callback Langfuse gắn ở tầng
+graph phủ được — hồi còn xử lý ở webhook thì lượt gọi này vô hình trên trace.
+
+**4. `save_to_db`** — `upsert_task` theo `task_id = sha256(nhóm + nội dung)[:16]`
 (R7), nên gửi lại cùng một báo cáo không tạo bản trùng. Việc nào không có hạn thì
 hỏi bổ sung đúng một lần (R9).
 
-### Vòng sửa
+### Vòng sửa và vòng hỏi lại
 
-`route_after_confirm` trả `"extract_tasks"` khi `status == "edit"` — quay lại
-chính node đầu tiên, kèm `edit_request` để nối thêm prompt `extract_retry.md`.
+`route_after_confirm` đọc `confirm_status` rồi rẽ ba hướng khác `END`:
 
-Chốt chặn nằm ở **tầng webhook chứ không phải trong graph**: nếu người dùng chỉ
-tỏ ý không ưng mà chưa nói sửa chỗ nào (`edit` nhưng `edit_request = null`), hoặc
-ý định `unclear`, thì webhook hỏi lại và **không resume**. Trích lại mà không
-biết sửa gì thì chỉ ra đúng kết quả cũ, tốn một lời gọi LLM vô ích.
+| status | đi đâu | vì sao |
+|---|---|---|
+| `approved` | `save_to_db` | duyệt xong, lưu |
+| `edit` | `extract_tasks` | trích lại, kèm `edit_request` nối vào `extract_retry.md` |
+| `unclear` | `ask_confirm` | hỏi lại, bảng vẫn đang chờ duyệt |
+
+Người dùng chỉ tỏ ý không ưng mà chưa nói sửa chỗ nào (`edit` nhưng
+`edit_request = null`) thì `read_decision` **hạ xuống `unclear`** — trích lại mà
+không biết sửa gì thì chỉ ra đúng kết quả cũ, tốn một lời gọi LLM vô ích.
+
+Hướng `unclear -> ask_confirm` là chỗ vòng lặp khép lại: graph treo lại ở
+`interrupt()`, `_is_awaiting_confirm` ở webhook vẫn thấy `ask_confirm` trong
+`snapshot.next`, nên câu trả lời kế tiếp lại đi đúng đường này.
 
 ---
 

@@ -69,7 +69,7 @@ def load_prompt(name: str, **variables: str) -> str:
             fallback=local,
         )
         return prompt.compile(**variables)
-    except ImportError:
+    except ImportError as exc:
         # Có key nhưng chưa cài gói -> đừng làm sập agent vì chuyện quan sát
-        log.warning("Đã đặt LANGFUSE_* nhưng chưa cài gói langfuse, dùng prompt .md")
+        log.warning("Dùng prompt .md, không gọi được Langfuse: %s", exc)
         return _compile_local(local, variables)

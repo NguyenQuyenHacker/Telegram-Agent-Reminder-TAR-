@@ -29,9 +29,9 @@ def _build_dispatcher(app: FastAPI) -> Dispatcher:
             await handle_text_message(app.state.graph, message)
 
     @dp.callback_query()
-    async def _on_callback(cb: CallbackQuery) -> None:
-        if (cb.data or "").startswith("task:"):
-            await handle_task_callback(cb)
+    async def _on_callback(callback: CallbackQuery) -> None:
+        if (callback.data or "").startswith("task:"):
+            await handle_task_callback(callback)
 
     return dp
 

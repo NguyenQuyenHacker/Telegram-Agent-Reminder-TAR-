@@ -35,7 +35,7 @@ async def _send_and_reschedule(task: Task, now: datetime) -> None:
     Gửi lỗi thì để nguyên next_remind_at, lượt quét sau sẽ gặp lại việc này.
     """
     priority = maybe_escalate(task, now)
-    remind_state = (
+    remind_status = (
         TaskStatus.snoozed if task.status == TaskStatus.snoozed else TaskStatus.pending
     )
 
@@ -54,10 +54,10 @@ async def _send_and_reschedule(task: Task, now: datetime) -> None:
     await asyncio.to_thread(
         reschedule_task,
         task.task_id,
-        compute_next_remind_at(priority, remind_state, now),
+        compute_next_remind_at(priority, remind_status, now),
         now,
         priority,
-        interval_for(priority, remind_state),
+        interval_for(priority, remind_status),
     )
 
 

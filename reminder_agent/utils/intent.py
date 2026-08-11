@@ -1,9 +1,14 @@
-"""Đọc ý định tin nhắn — chạy NGOÀI graph.
+"""Đọc ý định tin nhắn.
 
-Webhook/polling cần biết tin nhắn là báo cáo hay câu hỏi TRƯỚC khi quyết định
-đưa vào graph thế nào, và cần đọc câu trả lời của người duyệt để resume graph
-đang treo ở interrupt. Cả hai đều xảy ra trước/ngoài luồng graph nên để riêng ở
-đây, không phải node.
+Hai hàm, hai nơi gọi, hai mức chi phí khác nhau:
+
+  - classify_message: webhook gọi TRƯỚC khi vào graph, để biết mở lượt mới kiểu
+    nào. Chỉ bắt keyword nên 0ms, 0đ — không đáng để thành node.
+  - parse_free_text_decision: node read_decision gọi, đọc câu trả lời của người
+    duyệt. Đây là lời gọi LLM nên phải nằm trong graph mới được trace.
+
+Để chung một file vì cùng trả lời câu "người dùng đang muốn gì", dù nơi gọi khác
+nhau.
 """
 
 from functools import lru_cache

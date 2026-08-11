@@ -36,14 +36,14 @@ async def query_tasks(
     today = now_local().date()
     return [
         {
-            "task_id": t.task_id,
-            "group": t.group,
-            "content": t.content,
-            "due_date": t.due_date.isoformat() if t.due_date else None,
-            "due_weekday": weekday_vi(t.due_date) if t.due_date else None,
-            "days_left": (t.due_date - today).days if t.due_date else None,
-            "priority": t.priority.value,
-            "status": t.status.value,
+            "task_id": task.task_id,
+            "group": task.group,
+            "content": task.content,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "due_weekday": weekday_vi(task.due_date) if task.due_date else None,
+            "days_left": (task.due_date - today).days if task.due_date else None,
+            "priority": task.priority.value,
+            "status": task.status.value,
         }
-        for t in tasks
+        for task in tasks
     ]

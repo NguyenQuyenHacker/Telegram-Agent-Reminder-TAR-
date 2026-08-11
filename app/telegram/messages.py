@@ -1,12 +1,9 @@
-import re
 from datetime import datetime
 from html import escape
 
 from app.core.datetime_utils import to_local
+from app.core.task_text import normalize_content
 from persistence.models.task import Priority, Task
-
-# "(hạn 20/8)", "(Hạn: 20/8)", "(hết hạn 20/8)" — mọi biến thể trong ngoặc đơn
-_INLINE_DUE = re.compile(r"\s*\(\s*(?:hết\s+)?hạn\b[^)]*\)", re.IGNORECASE)
 
 # reminder_text dựng HTML nên nơi gọi phải gửi kèm parse_mode này. Khai ở đây
 # để hai thứ nằm cạnh nhau, đổi định dạng không quên đổi chỗ gọi.
@@ -16,26 +13,22 @@ REMINDER_PARSE_MODE = "HTML"
 def _display_content(task: Task) -> str:
     """Nội dung đã gọt phần trùng lặp với các dòng khác của tin nhắn.
 
-    DB cố tình lưu nguyên văn dòng báo cáo (rule 4 của prompt trích) để còn đối
-    chiếu lại được. Việc gọt là chuyện của lớp hiển thị: "ƯU TIÊN:" đã có badge
-    nói hộ, "(hạn 20/8)" đã có dòng 📅 nói hộ.
+    "ƯU TIÊN:" đã có badge nói hộ, "(hạn 20/8)" đã có dòng 📅 nói hộ.
     """
-    content = task.content.removeprefix("ƯU TIÊN:")
-    content = _INLINE_DUE.sub("", content)
-    return content.strip(" -–—:")
+    return normalize_content(task.content)
 
 
 def _due_line(task: Task, now: datetime) -> str:
     if task.due_date is None:
         return "📅 Chưa có hạn"
     today = to_local(now).date()
-    delta = (task.due_date - today).days
-    stamp = f"📅 Hạn {task.due_date.strftime('%d/%m')}"
-    if delta < 0:
-        return f"{stamp} · ⏰ Quá hạn {abs(delta)} ngày"
-    if delta == 0:
-        return f"{stamp} · ⏰ Hạn chót hôm nay"
-    return f"{stamp} · ⏳ Còn {delta} ngày"
+    days_left = (task.due_date - today).days
+    due_label = f"📅 Hạn {task.due_date.strftime('%d/%m')}"
+    if days_left < 0:
+        return f"{due_label} · ⏰ Quá hạn {abs(days_left)} ngày"
+    if days_left == 0:
+        return f"{due_label} · ⏰ Hạn chót hôm nay"
+    return f"{due_label} · ⏳ Còn {days_left} ngày"
 
 
 def reminder_text(task: Task, now: datetime, priority: Priority | None = None) -> str:
@@ -44,13 +37,13 @@ def reminder_text(task: Task, now: datetime, priority: Priority | None = None) -
     group và content là dữ liệu người dùng nhập nên phải escape: một dấu '<'
     trong tên nhóm là đủ để Telegram từ chối cả tin nhắn.
     """
-    effective = priority or task.priority
+    effective_priority = priority or task.priority
     group = escape(task.group, quote=False)
     content = escape(_display_content(task), quote=False)
 
     # Việc gấp: nhãn tách hẳn ra dòng riêng cho đập vào mắt. Việc thường không
     # cần dòng đó, chấm màu đứng luôn trước tên nhóm cho gọn.
-    if effective == Priority.urgent:
+    if effective_priority == Priority.urgent:
         header = f"🔴 <b>ƯU TIÊN</b>\n📁 {group}"
     else:
         header = f"🔵 {group}"
@@ -63,8 +56,8 @@ def done_confirmation_text(task: Task) -> str:
 
 
 def snooze_confirmation_text(task: Task, next_remind_at: datetime) -> str:
-    stamp = to_local(next_remind_at).strftime("%H:%M %d/%m")
-    return f"⏰ Đã hoãn: {task.content}\nSẽ nhắc lại lúc {stamp}"
+    next_remind_label = to_local(next_remind_at).strftime("%H:%M %d/%m")
+    return f"⏰ Đã hoãn: {task.content}\nSẽ nhắc lại lúc {next_remind_label}"
 
 
 def undo_confirmation_text(task: Task) -> str:
@@ -83,10 +76,13 @@ def extraction_summary_text(tasks: list[dict]) -> str:
     if not tasks:
         return "Không trích được đầu việc nào ở khối 'Tiếp theo:'."
     lines = [f"Trích được {len(tasks)} đầu việc:"]
-    for i, t in enumerate(tasks, 1):
-        flag = "🔴" if t.get("priority") == "urgent" else "🔵"
-        due = t.get("due_date") or "chưa có hạn"
-        lines.append(f"{i}. {flag} [{t.get('group')}] {t.get('content')} — {due}")
+    for order, task in enumerate(tasks, 1):
+        priority_icon = "🔴" if task.get("priority") == "urgent" else "🔵"
+        due_label = task.get("due_date") or "chưa có hạn"
+        lines.append(
+            f"{order}. {priority_icon} [{task.get('group')}] "
+            f"{task.get('content')} — {due_label}"
+        )
     lines.append("\nNhắn 'ok' để lưu, hoặc nói rõ cần sửa chỗ nào.")
     return "\n".join(lines)
 

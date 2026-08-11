@@ -27,10 +27,10 @@ async def search_reports(
     )
     return [
         {
-            "report_id": r.report_id,
-            "group": r.group,
-            "received_at": r.received_at.isoformat(),
-            "raw_text": r.raw_text,
+            "report_id": report.report_id,
+            "group": report.group,
+            "received_at": report.received_at.isoformat(),
+            "raw_text": report.raw_text,
         }
-        for r in reports
+        for report in reports
     ]

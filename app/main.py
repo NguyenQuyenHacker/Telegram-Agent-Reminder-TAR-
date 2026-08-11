@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -11,6 +12,11 @@ from app.telegram.bot import bot, set_webhook
 from app.telegram.polling import start_dev_polling, stop_dev_polling
 from reminder_agent.config.settings import load_config
 from reminder_agent.graph import ReminderAgent
+
+# Đổ .env vào os.environ. pydantic-settings đã tự đọc .env cho Settings, nhưng
+# chỉ để điền field của nó chứ KHÔNG ghi vào os.environ — nên thư viện nào đọc
+# thẳng os.getenv (Langfuse với LANGFUSE_*) sẽ không thấy gì nếu thiếu dòng này.
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,

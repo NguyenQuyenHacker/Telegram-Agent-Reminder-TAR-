@@ -14,13 +14,13 @@ def now_local() -> datetime:
 _WEEKDAY_VI = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
 
 
-def weekday_vi(d: date) -> str:
+def weekday_vi(day: date) -> str:
     """Tên thứ trong tuần.
 
     Tính ở Python rồi đưa sẵn cho LLM, không để nó tự suy từ ngày ISO: suy lịch
     là thứ LLM làm sai thường xuyên, mà sai kiểu này thì trông vẫn rất thật.
     """
-    return _WEEKDAY_VI[d.weekday()]
+    return _WEEKDAY_VI[day.weekday()]
 
 
 def to_local(dt: datetime) -> datetime:

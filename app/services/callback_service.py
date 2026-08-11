@@ -21,70 +21,74 @@ log = logging.getLogger(__name__)
 _TASK_NOT_FOUND = "Không tìm thấy việc này"
 
 
-async def _handle_done(cb: CallbackQuery, task_id: str) -> None:
+async def _handle_done(callback: CallbackQuery, task_id: str) -> None:
     """Đánh dấu xong, đổi bàn phím sang nút hoàn tác."""
-    await cb.answer("Đã ghi nhận")
+    await callback.answer("Đã ghi nhận")
     # mark_done tự đọc task, không cần get_task riêng trước đó
-    updated = await asyncio.to_thread(mark_done, task_id)
-    if updated is None:
-        await send_message(cb.message.chat.id, _TASK_NOT_FOUND)
+    updated_task = await asyncio.to_thread(mark_done, task_id)
+    if updated_task is None:
+        await send_message(callback.message.chat.id, _TASK_NOT_FOUND)
         return
     await edit_message(
-        cb.message.chat.id,
-        cb.message.message_id,
-        done_confirmation_text(updated),
+        callback.message.chat.id,
+        callback.message.message_id,
+        done_confirmation_text(updated_task),
         undo_keyboard(task_id),
     )
 
 
-async def _handle_snooze(cb: CallbackQuery, task_id: str) -> None:
+async def _handle_snooze(callback: CallbackQuery, task_id: str) -> None:
     """Hoãn: tính lại mốc nhắc theo nhịp của trạng thái snoozed."""
-    await cb.answer("Sẽ nhắc lại")
+    await callback.answer("Sẽ nhắc lại")
     task = await asyncio.to_thread(get_task, task_id)
     if task is None:
-        await send_message(cb.message.chat.id, _TASK_NOT_FOUND)
+        await send_message(callback.message.chat.id, _TASK_NOT_FOUND)
         return
 
     now = now_local()
     priority = maybe_escalate(task, now)
-    next_at = compute_next_remind_at(priority, TaskStatus.snoozed, now)
-    updated = await asyncio.to_thread(
-        snooze_task, task_id, next_at, interval_for(priority, TaskStatus.snoozed)
+    next_remind_at = compute_next_remind_at(priority, TaskStatus.snoozed, now)
+    updated_task = await asyncio.to_thread(
+        snooze_task, task_id, next_remind_at, interval_for(priority, TaskStatus.snoozed)
     )
     await edit_message(
-        cb.message.chat.id,
-        cb.message.message_id,
-        snooze_confirmation_text(updated, next_at),
+        callback.message.chat.id,
+        callback.message.message_id,
+        snooze_confirmation_text(updated_task, next_remind_at),
     )
 
 
-async def _handle_undo(cb: CallbackQuery, task_id: str) -> None:
+async def _handle_undo(callback: CallbackQuery, task_id: str) -> None:
     """Hoàn tác (R8: chỉ trong 24h).
 
     Giữ nguyên answer-sau, khác hai nhánh trên: nhánh này cần bật alert khi đã
     quá hạn hoàn tác, mà alert thì phải gửi kèm kết quả đọc DB.
     """
-    updated = await asyncio.to_thread(undo_done, task_id)
-    if updated is None:
-        await cb.answer(undo_expired_text(), show_alert=True)
+    updated_task = await asyncio.to_thread(undo_done, task_id)
+    if updated_task is None:
+        await callback.answer(undo_expired_text(), show_alert=True)
         return
     await edit_message(
-        cb.message.chat.id, cb.message.message_id, undo_confirmation_text(updated)
+        callback.message.chat.id,
+        callback.message.message_id,
+        undo_confirmation_text(updated_task),
     )
-    await cb.answer("Đã hoàn tác")
+    await callback.answer("Đã hoàn tác")
 
 
-async def handle_task_callback(cb: CallbackQuery) -> None:
+async def handle_task_callback(callback: CallbackQuery) -> None:
     """Job B: xử lý nút Đã xong / Nhắc sau / Hoàn tác. Không dùng AI, không phải graph.
 
     Thứ tự bắt buộc trong mỗi nhánh: ghi DB trước, sửa tin nhắn sau — để lỗi
     ghi không hiện trạng thái sai cho người dùng.
 
-    Riêng cb.answer() chỉ tắt vòng xoay trên nút chứ không hiển thị trạng thái
+    Riêng callback.answer() chỉ tắt vòng xoay trên nút chứ không hiển thị trạng thái
     việc, nên nhánh done/snooze gọi ngay từ đầu: người dùng thấy nút nhả tức
     thì thay vì chờ hết 2 vòng round-trip DB + 1 vòng sửa tin nhắn.
     """
-    _, action, task_id = cb.data.split(":", 2)
+    # callback_data có dạng "task:<action>:<task_id>", tiền tố "task:" đã được
+    # lọc ở nơi gọi nên bỏ đi
+    _prefix, action, task_id = callback.data.split(":", 2)
     log.info("CALLBACK action=%s task_id=%s", action, task_id)
 
     handler = {
@@ -94,7 +98,7 @@ async def handle_task_callback(cb: CallbackQuery) -> None:
     }.get(action)
 
     if handler is None:
-        await cb.answer("Thao tác không hợp lệ")
+        await callback.answer("Thao tác không hợp lệ")
         return
 
-    await handler(cb, task_id)
+    await handler(callback, task_id)

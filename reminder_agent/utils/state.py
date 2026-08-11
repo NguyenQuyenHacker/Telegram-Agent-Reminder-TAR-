@@ -24,5 +24,7 @@ class GraphState(TypedDict, total=False):
     raw_report_text: str | None
     extracted_tasks: list[ExtractedTask]
     edit_request: str | None
+    # Nguyên văn câu trả lời của người duyệt, ask_confirm ghi -> read_decision đọc
+    confirm_reply: str | None
     confirm_status: Literal["approved", "edit", "abandoned", "unclear"] | None
     tool_call_rounds: int

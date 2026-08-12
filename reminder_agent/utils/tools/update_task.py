@@ -4,24 +4,9 @@ from typing import Literal
 
 from langchain_core.tools import tool
 
-from app.core.datetime_utils import now_local, weekday_vi
-from app.core.task_text import normalize_content
-from persistence.models.task import Task
+from app.core.datetime_utils import now_local
 from persistence.proc.tasks import find_tasks_by_reference
-
-
-def _brief(task: Task) -> dict:
-    today = now_local().date()
-    return {
-        "task_id": task.task_id,
-        "code": task.code,
-        "group": task.group,
-        "content": normalize_content(task.content),
-        "due_date": task.due_date.isoformat() if task.due_date else None,
-        "due_weekday": weekday_vi(task.due_date) if task.due_date else None,
-        "days_left": (task.due_date - today).days if task.due_date else None,
-    }
-
+from reminder_agent.utils.tools.task_view import task_brief
 
 def _parse_due(new_due_date: str | None) -> date | None:
     try:
@@ -44,21 +29,28 @@ async def propose_task_update(
             "reschedule" khi đổi hạn.
         new_due_date: hạn mới dạng "YYYY-MM-DD", bắt buộc khi action="reschedule".
     """
-    parsed_due = _parse_due(new_due_date)
-    if action == "reschedule" and parsed_due is None:
-        # Hỏi lại chứ không đoán: đoán sai một cái hạn là người dùng trễ việc.
-        return {
-            "status": "invalid_due_date",
-            "hint": 'Cần hạn mới dạng "YYYY-MM-DD". Hỏi lại người dùng.',
-        }
+    if action == "reschedule":
+        new_due = _parse_due(new_due_date)
+        if new_due is None:
+            # Hỏi lại chứ không đoán: đoán sai một cái hạn là người dùng trễ việc.
+            return {
+                "status": "invalid_due_date",
+                "hint": 'Cần hạn mới dạng "YYYY-MM-DD". Hỏi lại người dùng.',
+            }
+    else:
+        # Ngày gửi kèm "done"/"cancel" không có chỗ dùng — hai hành động đó không
+        # đụng tới cột due_date. Bỏ ngay tại đây để nó không lọt vào đề xuất rồi
+        # bảng xác nhận đọc lên một cái hạn sẽ không bao giờ được ghi.
+        new_due = None
 
     matches = await asyncio.to_thread(find_tasks_by_reference, task_ref)
     if not matches:
         return {"status": "not_found", "task_ref": task_ref}
     if len(matches) > 1:
+        now = now_local()
         return {
             "status": "ambiguous",
-            "candidates": [_brief(task) for task in matches],
+            "candidates": [task_brief(task, now) for task in matches],
             "hint": "Đọc mã của từng ứng viên và hỏi người dùng chọn cái nào.",
         }
 
@@ -66,9 +58,11 @@ async def propose_task_update(
     return {
         "status": "proposed",
         "action": action,
+        # task_id chỉ để apply_updates ghi đúng dòng; LLM không cần nhắc tới nó,
+        # người dùng đọc mã việc ở trường code.
         "task_id": task.task_id,
         "code": task.code,
-        "content": normalize_content(task.content),
-        "new_due_date": parsed_due.isoformat() if parsed_due else None,
+        "content": task.content,
+        "new_due_date": new_due.isoformat() if new_due else None,
         "hint": "Chưa ghi gì cả. Người dùng sẽ được hỏi xác nhận ngay sau câu trả lời của bạn.",
     }

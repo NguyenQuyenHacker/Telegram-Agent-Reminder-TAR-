@@ -1,19 +1,21 @@
 """Chuẩn hoá nội dung đầu việc.
 
-DB lưu nguyên văn dòng báo cáo (rule 4 của prompt trích) để còn đối chiếu lại
-được. Nhưng có hai chỗ cần bản đã gọt thay vì bản nguyên văn:
+Bản đã gọt là thứ ĐƯỢC LƯU vào DB, không phải nguyên văn dòng báo cáo. Giữ
+nguyên văn thì hạn nằm ở hai nơi — cột `due_date` và cái đuôi "(hạn 20/8)" trong
+`content` — mà lệnh dời hạn chỉ chạm được một; đổi hạn xong là hai chỗ đá nhau,
+và tool query_tasks đưa cả hai cho LLM đọc.
 
-  - tính task_id (R7): hạn KHÔNG được là một phần căn cước công việc, nếu không
-    thì sửa hạn rồi gửi lại báo cáo sẽ đẻ ra một dòng mới thay vì cập nhật;
-  - hiển thị tin nhắn nhắc: mức ưu tiên và hạn đã có dòng riêng nói hộ.
-
-Hai chỗ đó phải gọt GIỐNG HỆT nhau, nên dùng chung một hàm ở đây.
+Cùng hàm này còn dùng để tính task_id (R7): hạn KHÔNG được là một phần căn cước
+công việc, nếu không thì sửa hạn rồi gửi lại báo cáo sẽ đẻ ra một dòng mới thay
+vì cập nhật.
 """
 
 import re
 
-# "(hạn 20/8)", "(Hạn: 20/8)", "(hết hạn 20/8)" — mọi biến thể trong ngoặc đơn
-_INLINE_DUE = re.compile(r"\s*\(\s*(?:hết\s+)?hạn\b[^)]*\)", re.IGNORECASE)
+# "(hạn 20/8)", "(Hạn: 20/8)", "(hết hạn 20/8)" — mọi biến thể trong ngoặc đơn.
+# Ngoặc đóng là TUỲ CHỌN: báo cáo gõ thiếu ")" là chuyện thường, mà bỏ sót một
+# lần thì cái đuôi hạn chui vào task_id, sau này gõ đúng lại đẻ ra dòng khác.
+_INLINE_DUE = re.compile(r"\s*\(\s*(?:hết\s+)?hạn\b[^)]*(?:\)|$)", re.IGNORECASE)
 
 _URGENT_PREFIX = "ƯU TIÊN:"
 

@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from aiogram.types import Message, Update
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -13,7 +14,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks")
 
 
-def _thread_config(chat_id: int) -> dict:
+def _thread_config(chat_id: int) -> dict[str, dict[str, str]]:
     """Mỗi chat là một thread riêng của LangGraph, state lưu theo thread_id này."""
     return {"configurable": {"thread_id": str(chat_id)}}
 
@@ -24,12 +25,12 @@ def _thread_config(chat_id: int) -> dict:
 _INTERRUPT_NODES = {"ask_confirm", "ask_update_confirm"}
 
 
-async def _is_awaiting_confirm(graph, chat_id: int) -> bool:
+async def _is_awaiting_confirm(graph: Any, chat_id: int) -> bool:
     snapshot = await graph.aget_state(_thread_config(chat_id))
     return bool(_INTERRUPT_NODES.intersection(snapshot.next or ()))
 
 
-async def handle_text_message(graph, message: Message) -> None:
+async def handle_text_message(graph: Any, message: Message) -> None:
     """Job C: tin nhắn text. Ưu tiên luồng xác nhận đang treo, rồi mới phân loại."""
     chat_id = message.chat.id
     text = message.text
@@ -76,7 +77,7 @@ async def handle_text_message(graph, message: Message) -> None:
 async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
-):
+) -> dict[str, bool]:
     if not verify_webhook_secret(x_telegram_bot_api_secret_token):
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 

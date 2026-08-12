@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -34,7 +35,7 @@ def _checkpointer_dsn() -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with AsyncPostgresSaver.from_conn_string(_checkpointer_dsn()) as checkpointer:
         await checkpointer.setup()
         # Dựng trong lifespan chứ không ở module level như template LangGraph
@@ -78,5 +79,5 @@ app.include_router(webhooks_router)
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, bool]:
     return {"ok": True}

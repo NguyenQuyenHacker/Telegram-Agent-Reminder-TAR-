@@ -2,7 +2,9 @@
 
 Toàn bộ node là method của ReminderAgent, để mọi thứ một lượt chạy cần —
 vai LLM, tool, checkpointer — nằm trong self, khai báo một chỗ ở __init__ thay
-vì rải khắp các hàm module-level.
+vì rải khắp các hàm module-level. Ngược lại, mấy bảng tra và hàm ghi DB ở tầng
+module (_CONFIRM_ROUTES, _UPDATE_ACTIONS, _apply_*) cố ý nằm ngoài class: chúng
+không cần gì trong self, để ngoài thì nhìn một chỗ là thấy hết các nhánh.
 
 Graph có hai nhánh:
   báo cáo:  extract_tasks -> ask_confirm -> read_decision -(duyệt)-> save_to_db
@@ -22,10 +24,12 @@ import hashlib
 import logging
 import os
 import re
-from datetime import date
+import uuid
+from datetime import date, datetime
 from typing import Literal
 
 from langchain_core.messages import (
+    AnyMessage,
     HumanMessage,
     RemoveMessage,
     SystemMessage,
@@ -53,8 +57,8 @@ from app.telegram.messages import (
     update_failed_text,
 )
 from app.telegram.sender import send_message
-from persistence.models.task import Priority
-from persistence.proc.reports import insert_report
+from persistence.models.task import Priority, Task
+from persistence.proc.groups import get_or_create_group
 from persistence.proc.tasks import (
     cancel_task,
     get_task,
@@ -70,6 +74,83 @@ from reminder_agent.utils.state import GraphState
 from reminder_agent.utils.tools import ALL_TOOLS
 
 log = logging.getLogger(__name__)
+
+
+def _dated_prompt(name: str, today: date, **variables: str) -> str:
+    """Prompt `name` ghép với khối quy ước ngày tháng dùng chung.
+
+    Cả hai nhánh đều cần mốc TODAY: thiếu nó thì "20/7" của người dùng bị model
+    gán một năm tự nghĩ ra, tra DB không ra gì.
+    """
+    return (
+        load_prompt(name, TODAY=today.isoformat(), **variables)
+        + "\n\n"
+        + load_prompt("_date_rules", TODAY=today.isoformat())
+    )
+
+
+# confirm_status -> node kế tiếp. "edit" tới đây chắc chắn có edit_request, vì
+# read_decision đã hạ "edit" thiếu lý do xuống "unclear". "unclear" quay lại hỏi
+# tiếp chứ KHÔNG kết thúc: bảng đầu việc vẫn đang chờ duyệt.
+_CONFIRM_ROUTES = {
+    "approved": "save_to_db",
+    "edit": "extract_tasks",
+    "unclear": "ask_confirm",
+    "abandoned": END,
+}
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    """Ngày trong đề xuất -> date. Đề xuất đi qua checkpoint rồi mới tới đây, nên
+    vẫn kiểm lại thay vì tin: hỏng một dòng không được làm chết cả node."""
+    try:
+        return date.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def _merge_proposals(pending: list[dict], new_proposals: list[dict]) -> list[dict]:
+    """Gộp đề xuất mới vào danh sách đang chờ, mỗi việc chỉ giữ đề xuất cuối.
+
+    LLM có thể đề xuất hai lần cho cùng một việc trong một lượt ("xong TB-002"
+    rồi tự sửa thành "dời hạn TB-002"). Giữ cả hai là ghi tuần tự hai lệnh lên
+    một dòng: mark_done chạy trước, set_due_date sau đó thấy dòng không còn
+    pending và trượt — người dùng gật một lần mà nhận về một xác nhận cộng một
+    báo lỗi. Bảng xác nhận cũng đọc từ chính danh sách này, nên gộp ở đây là
+    thứ người dùng thấy và thứ được ghi luôn khớp nhau.
+    """
+    by_task = {proposal["task_id"]: proposal for proposal in [*pending, *new_proposals]}
+    return list(by_task.values())
+
+
+def _apply_done(update: dict) -> Task | None:
+    return mark_done(update["task_id"])
+
+
+def _apply_cancel(update: dict) -> Task | None:
+    return cancel_task(update["task_id"])
+
+
+def _apply_reschedule(update: dict) -> Task | None:
+    new_due = _parse_iso_date(update.get("new_due_date"))
+    if new_due is None:
+        # Thiếu hoặc hỏng hạn mới thì KHÔNG ghi: set_due_date(None) sẽ xoá luôn
+        # hạn cũ, trong khi bảng xác nhận vừa hứa với người dùng là "đổi hạn".
+        log.error("APPLY: đề xuất reschedule không có hạn mới hợp lệ: %r", update)
+        return None
+    # Mốc nhắc dời ra một nhịp: người dùng vừa đọc xác nhận đổi hạn xong, nhắc
+    # lại ngay lượt quét kế tiếp là thừa. Hạn mới không tự đổi nhịp nhắc — nhịp
+    # là hằng số cấu hình — nên phải ghi tay ở đây.
+    return set_due_date(update["task_id"], new_due, compute_next_remind_at(now_local()))
+
+
+# action -> (hàm ghi DB, câu xác nhận). Cả ba hàm ghi đều đồng bộ nên
+# apply_updates gọi chúng qua to_thread, không hàm nào tự biết mình chạy ở đâu.
+_UPDATE_ACTIONS = {
+    "done": (_apply_done, done_confirmation_text),
+    "cancel": (_apply_cancel, cancel_confirmation_text),
+    "reschedule": (_apply_reschedule, due_updated_text),
+}
 
 
 class ReminderAgent:
@@ -106,16 +187,19 @@ class ReminderAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def compute_task_id(group: str, content: str) -> str:
+    def compute_task_id(group_id: uuid.UUID, content: str) -> str:
         """R7: cùng nhóm + cùng nội dung luôn ra cùng mã, để đồng bộ lại không trùng.
 
         Băm bản đã gọt "(hạn ...)" chứ không băm nguyên văn: hạn là thuộc tính
         của công việc, không phải căn cước của nó. Băm cả hạn thì báo cáo sửa
         ngày sẽ đẻ ra dòng mới, còn dòng cũ nằm lại nhắc theo hạn đã lỗi thời —
         đúng thứ R7 sinh ra để chống.
+
+        Băm group_id chứ không băm tên nhóm: tên đã được chuẩn hoá một lần khi
+        sinh ra id, nên ở đây không phải đoán lại cách chuẩn hoá cho khớp.
         """
         collapsed_content = re.sub(r"\s+", " ", normalize_content(content).lower())
-        identity_key = f"{group.strip().lower()}|{collapsed_content}"
+        identity_key = f"{group_id}|{collapsed_content}"
         return hashlib.sha256(identity_key.encode("utf-8")).hexdigest()[:16]
 
     async def extract_tasks(self, state: GraphState) -> dict:
@@ -123,12 +207,7 @@ class ReminderAgent:
         report_text = state.get("raw_report_text") or ""
         edit_request = state.get("edit_request")
 
-        today = now_local().date()
-        system_prompt = (
-            load_prompt("extract_system", TODAY=today.isoformat())
-            + "\n\n"
-            + load_prompt("_date_rules", TODAY=today.isoformat())
-        )
+        system_prompt = _dated_prompt("extract_system", now_local().date())
         if edit_request:
             system_prompt += "\n\n" + load_prompt(
                 "extract_retry", EDIT_REQUEST=edit_request
@@ -143,11 +222,6 @@ class ReminderAgent:
 
         tasks = [task.model_dump() for task in extraction.tasks]
         log.info("EXTRACT: trích được %d đầu việc", len(tasks))
-
-        # Chỉ lưu báo cáo ở lần trích đầu. Nhánh sửa quay lại chính node này,
-        # lưu tiếp là nhân bản cùng một báo cáo trong DB.
-        if not edit_request:
-            await asyncio.to_thread(insert_report, report_text)
 
         # Gửi bảng ở đây chứ không ở ask_confirm: node có interrupt() sẽ chạy
         # lại từ đầu mỗi lần resume, để send_message trong đó thì người dùng
@@ -198,16 +272,30 @@ class ReminderAgent:
 
     def route_after_confirm(self, state: GraphState) -> str:
         status = state.get("confirm_status")
-        if status == "approved":
-            return "save_to_db"
-        if status == "edit":
-            # read_decision đã hạ "edit" thiếu edit_request xuống "unclear", nên
-            # tới đây chắc chắn có chỗ cần sửa để trích lại
-            return "extract_tasks"
-        if status == "unclear":
-            # Quay lại hỏi tiếp, KHÔNG kết thúc: bảng đầu việc vẫn đang chờ duyệt
-            return "ask_confirm"
-        return END
+        next_node = _CONFIRM_ROUTES.get(status)
+        if next_node is None:
+            # read_decision luôn ghi một trong bốn status; thiếu nghĩa là node đó
+            # không chạy. Dừng hẳn chứ không đoán, còn hơn treo ở interrupt.
+            log.error("CONFIRM: status lạ %r chat_id=%s", status, state["chat_id"])
+            return END
+        return next_node
+
+    async def _upsert_extracted_task(self, task: dict, first_remind_at: datetime) -> Task:
+        """Một dòng trích được -> một dòng trong DB. Chạy upsert đồng bộ ở thread khác.
+
+        Dòng nhóm phải có trước vì task.group_id là khoá ngoại trỏ vào nó.
+        """
+        group = await asyncio.to_thread(get_or_create_group, task["group"])
+        return await asyncio.to_thread(
+            upsert_task,
+            self.compute_task_id(group.group_id, task["content"]),
+            group.group_id,
+            # Lưu bản đã gọt: hạn chỉ sống ở due_date, mức ưu tiên ở priority.
+            normalize_content(task["content"]),
+            date.fromisoformat(task["due_date"]) if task.get("due_date") else None,
+            Priority(task["priority"]),
+            first_remind_at,
+        )
 
     async def save_to_db(self, state: GraphState) -> dict:
         """R7: upsert theo task_id; R9: hỏi bổ sung hạn đúng một lần."""
@@ -219,15 +307,7 @@ class ReminderAgent:
         first_remind_at = clamp_to_window(now_local())
         awaiting_due_task_ids = []
         for task in tasks:
-            saved_task = await asyncio.to_thread(
-                upsert_task,
-                self.compute_task_id(task["group"], task["content"]),
-                task["group"],
-                task["content"],
-                date.fromisoformat(task["due_date"]) if task.get("due_date") else None,
-                Priority(task["priority"]),
-                first_remind_at,
-            )
+            saved_task = await self._upsert_extracted_task(task, first_remind_at)
             if saved_task.due_date is None:
                 # Nhớ lại đã hỏi hạn cho việc nào: câu trả lời rơi vào nhánh hỏi
                 # đáp, ở đó LLM không có cách nào tự biết "2 ngày nữa" nói về việc gì.
@@ -242,7 +322,7 @@ class ReminderAgent:
     # Nhánh hỏi đáp
     # ------------------------------------------------------------------
 
-    def _recent_history(self, state: GraphState) -> list:
+    def _recent_history(self, state: GraphState) -> list[AnyMessage]:
         """N message gần nhất, cắt sao cho không vỡ cặp tool_call <-> kết quả.
 
         start_on="human" là chỗ quan trọng: cắt bừa có thể để lại ToolMessage mồ
@@ -259,39 +339,62 @@ class ReminderAgent:
         )
 
     @staticmethod
-    def _still_missing_due(task_ids: list[str]) -> list:
+    def _load_tasks_missing_due(task_ids: list[str]) -> list[Task]:
         """Việc nào trong danh sách chờ mà vẫn chưa có hạn. Chạy trong to_thread."""
         tasks = (get_task(task_id) for task_id in task_ids)
         return [task for task in tasks if task is not None and task.due_date is None]
 
+    async def _tasks_awaiting_due(self, state: GraphState) -> list[Task]:
+        """Việc vừa hỏi hạn mà người dùng chưa trả lời. Không có thì khỏi đụng DB."""
+        task_ids = state.get("awaiting_due_task_ids") or []
+        if not task_ids:
+            return []
+        return await asyncio.to_thread(self._load_tasks_missing_due, task_ids)
+
+    @staticmethod
+    def _qa_system_prompt(tasks_awaiting_due: list[Task]) -> str:
+        """Prompt nhánh hỏi đáp, kèm nhắc việc nào đang chờ hạn nếu có.
+
+        Vừa hỏi hạn cho vài việc thì phải nói cho LLM biết là hỏi việc nào: "3
+        ngày nữa" một mình không đủ để nó đoán ra đầu việc nào đang thiếu hạn.
+        """
+        today = now_local().date()
+        prompt = _dated_prompt("agent_system", today, TODAY_WEEKDAY=weekday_vi(today))
+        if not tasks_awaiting_due:
+            return prompt
+
+        pending_list = ", ".join(
+            f"{task.code} {task.content}" for task in tasks_awaiting_due
+        )
+        return prompt + (
+            f"\n\nYou have just asked the user for a deadline for: {pending_list}. "
+            "Their next message is most likely that deadline — call "
+            "propose_task_update(action='reschedule') for the matching task."
+        )
+
+    @staticmethod
+    def _history_deletions(
+        state: GraphState, kept_messages: list[AnyMessage]
+    ) -> list[RemoveMessage]:
+        """Xoá hẳn phần đã rơi ra ngoài cửa sổ khỏi state.
+
+        Chỉ cắt lúc gửi thôi thì chưa đủ: LangGraph vẫn ghi nguyên list vào
+        checkpoint mỗi lượt, thread không bao giờ đổi nên nó phình mãi.
+        """
+        kept_ids = {message.id for message in kept_messages}
+        deletions = [
+            RemoveMessage(id=message.id)
+            for message in state.get("messages", [])
+            if message.id not in kept_ids
+        ]
+        if deletions:
+            log.info("HISTORY: bỏ %d message cũ khỏi state", len(deletions))
+        return deletions
+
     async def call_model(self, state: GraphState) -> dict:
         recent_messages = self._recent_history(state)
-        # Nhánh này cũng cần mốc ngày như nhánh trích: không có thì "20/7" của
-        # người dùng bị model gán một năm tự nghĩ ra, tra DB không ra gì.
-        today = now_local().date()
-        system_prompt = load_prompt(
-            "agent_system",
-            TODAY=today.isoformat(),
-            TODAY_WEEKDAY=weekday_vi(today),
-        ) + "\n\n" + load_prompt("_date_rules", TODAY=today.isoformat())
-
-        # Vừa hỏi hạn cho vài việc thì nói cho LLM biết là hỏi việc nào: "3 ngày
-        # nữa" một mình không đủ để nó đoán ra đầu việc nào đang thiếu hạn.
-        awaiting_ids = state.get("awaiting_due_task_ids") or []
-        still_missing = (
-            await asyncio.to_thread(self._still_missing_due, awaiting_ids)
-            if awaiting_ids
-            else []
-        )
-        if still_missing:
-            pending_list = ", ".join(
-                f"{task.code} {normalize_content(task.content)}" for task in still_missing
-            )
-            system_prompt += (
-                f"\n\nYou have just asked the user for a deadline for: {pending_list}. "
-                "Their next message is most likely that deadline — call "
-                "propose_task_update(action='reschedule') for the matching task."
-            )
+        tasks_awaiting_due = await self._tasks_awaiting_due(state)
+        system_prompt = self._qa_system_prompt(tasks_awaiting_due)
 
         response = await self.qa_assistant.ainvoke(
             {
@@ -300,36 +403,38 @@ class ReminderAgent:
             }
         )
 
-        # Xoá hẳn phần đã rơi ra ngoài cửa sổ khỏi state. Chỉ cắt lúc gửi thôi
-        # thì chưa đủ: LangGraph vẫn ghi nguyên list vào checkpoint mỗi lượt,
-        # thread không bao giờ đổi nên nó phình mãi.
-        kept_ids = {message.id for message in recent_messages}
-        deletions = [
-            RemoveMessage(id=message.id)
-            for message in state.get("messages", [])
-            if message.id not in kept_ids
-        ]
-        if deletions:
-            log.info("HISTORY: bỏ %d message cũ khỏi state", len(deletions))
-
-        # Danh sách chờ hạn tự cạn: việc đã có hạn thì rơi ra khỏi still_missing
-        # và không bao giờ quay lại. Không cần ai đi dọn.
+        # Danh sách chờ hạn tự cạn: việc đã có hạn thì rơi ra khỏi
+        # _tasks_awaiting_due và không bao giờ quay lại. Không cần ai đi dọn.
         return {
-            "messages": [*deletions, response],
-            "awaiting_due_task_ids": [task.task_id for task in still_missing],
+            "messages": [*self._history_deletions(state, recent_messages), response],
+            "awaiting_due_task_ids": [task.task_id for task in tasks_awaiting_due],
         }
+
+    async def _invoke_tool(self, tool_call: dict) -> object:
+        """Chạy một tool_call, trả về giá trị gốc của tool.
+
+        Không để lỗi thoát ra ngoài: LLM phải nhận được lỗi dưới dạng ToolMessage
+        thì mới nói lại được với người dùng, còn exception thì cả lượt chết ngang.
+        """
+        tool_name = tool_call["name"]
+        tool = self._tools_by_name.get(tool_name)
+        if tool is None:
+            # LLM bịa tên tool. Nói thẳng cho nó biết, hơn là ném KeyError ra ngoài.
+            log.error("Tool %s không có trong danh sách", tool_name)
+            return f"Không có tool tên {tool_name}."
+
+        try:
+            return await tool.ainvoke(tool_call["args"])
+        except Exception as exc:
+            log.exception("Tool %s lỗi", tool_name)
+            return f"Lỗi khi tra cứu: {exc}"
 
     async def call_tools(self, state: GraphState) -> dict:
         last_message = state["messages"][-1]
         tool_messages = []
         proposals = []
         for tool_call in last_message.tool_calls:
-            tool = self._tools_by_name[tool_call["name"]]
-            try:
-                result = await tool.ainvoke(tool_call["args"])
-            except Exception as exc:
-                log.exception("Tool %s lỗi", tool_call["name"])
-                result = f"Lỗi khi tra cứu: {exc}"
+            result = await self._invoke_tool(tool_call)
             # Đề xuất được gom ở đây, từ giá trị trả về gốc của tool. Không đọc
             # lại từ câu trả lời của LLM: LLM có thể kể sai mã việc, còn đây là
             # đúng dòng mà propose_task_update đã tra ra.
@@ -345,7 +450,9 @@ class ReminderAgent:
         return {
             "messages": tool_messages,
             "tool_call_rounds": state.get("tool_call_rounds", 0) + 1,
-            "pending_updates": [*(state.get("pending_updates") or []), *proposals],
+            "pending_updates": _merge_proposals(
+                state.get("pending_updates") or [], proposals
+            ),
         }
 
     def route_agent(self, state: GraphState) -> str:
@@ -399,13 +506,15 @@ class ReminderAgent:
         này — đề xuất chỉ có ok hoặc thôi.
         """
         decision = await parse_free_text_decision(state.get("update_reply") or "")
-        status = decision["status"] if decision["status"] == "approved" else "abandoned"
+        approved = decision["status"] == "approved"
+        status = "approved" if approved else "abandoned"
         log.info("UPDATE CONFIRM status=%s chat_id=%s", status, state["chat_id"])
 
-        if status == "abandoned":
-            await send_message(state["chat_id"], abandoned_text())
-            return {"update_status": status, "pending_updates": []}
-        return {"update_status": status}
+        if approved:
+            return {"update_status": status}
+        # Dọn luôn đề xuất: không duyệt thì nó không được sống sang lượt sau
+        await send_message(state["chat_id"], abandoned_text())
+        return {"update_status": status, "pending_updates": []}
 
     def route_after_update(self, state: GraphState) -> str:
         return "apply_updates" if state.get("update_status") == "approved" else END
@@ -415,29 +524,22 @@ class ReminderAgent:
         for update in state.get("pending_updates") or []:
             task_id = update["task_id"]
             action = update["action"]
-            if action == "done":
-                task = await asyncio.to_thread(mark_done, task_id)
-                confirm = done_confirmation_text
-            elif action == "cancel":
-                task = await asyncio.to_thread(cancel_task, task_id)
-                confirm = cancel_confirmation_text
-            else:
-                new_due = (
-                    date.fromisoformat(update["new_due_date"])
-                    if update.get("new_due_date")
-                    else None
-                )
-                # Mốc nhắc dời theo luôn, nếu không thì lịch nhắc vẫn chạy theo hạn cũ
-                task = await asyncio.to_thread(
-                    set_due_date, task_id, new_due, compute_next_remind_at(now_local())
-                )
-                confirm = due_updated_text
+            handler = _UPDATE_ACTIONS.get(action)
+            if handler is None:
+                # Không đoán bừa: propose_task_update chỉ sinh ba action đã biết,
+                # rơi vào đây là đề xuất hỏng chứ không phải ý mới của người dùng.
+                log.error("APPLY: action lạ %r task_id=%s", action, task_id)
+                await send_message(state["chat_id"], update_failed_text())
+                continue
+
+            write_to_db, confirmation_text = handler
+            task = await asyncio.to_thread(write_to_db, update)
 
             log.info("APPLY action=%s task_id=%s ok=%s", action, task_id, task is not None)
             # Nhắn xác nhận từng thay đổi một, để người dùng soát được cái nào trượt
             await send_message(
                 state["chat_id"],
-                confirm(task) if task is not None else update_failed_text(),
+                confirmation_text(task) if task is not None else update_failed_text(),
             )
 
         return {"pending_updates": []}
@@ -477,29 +579,12 @@ class ReminderAgent:
         log.info("Langfuse tracing đã bật")
         return graph.with_config({"callbacks": [CallbackHandler()]})
 
-    def build_graph(self):
-        builder = StateGraph(GraphState)
-
-        # Nhánh báo cáo
+    def _add_report_branch(self, builder: StateGraph) -> None:
+        """Node và cạnh của nhánh báo cáo: trích -> chờ duyệt -> lưu."""
         builder.add_node("extract_tasks", self.extract_tasks)
         builder.add_node("ask_confirm", self.ask_confirm)
         builder.add_node("read_decision", self.read_decision)
         builder.add_node("save_to_db", self.save_to_db)
-
-        # Nhánh hỏi đáp
-        builder.add_node("agent", self.call_model)
-        builder.add_node("tools", self.call_tools)
-        builder.add_node("answer", self.answer)
-        builder.add_node("ask_update_confirm", self.ask_update_confirm)
-        builder.add_node("read_update_decision", self.read_update_decision)
-        builder.add_node("apply_updates", self.apply_updates)
-
-        # Cả ba chỗ rẽ nhánh dùng chung một API, chỉ khác điểm xuất phát:
-        # START / ask_confirm / agent. set_conditional_entry_point() làm đúng
-        # việc này nhưng là API riêng cho mỗi START, đọc thành ngoại lệ.
-        builder.add_conditional_edges(
-            START, self.route_entry, {"report": "extract_tasks", "qa": "agent"}
-        )
 
         builder.add_edge("extract_tasks", "ask_confirm")
         builder.add_edge("ask_confirm", "read_decision")
@@ -514,6 +599,15 @@ class ReminderAgent:
             },
         )
         builder.add_edge("save_to_db", END)
+
+    def _add_qa_branch(self, builder: StateGraph) -> None:
+        """Node và cạnh của nhánh hỏi đáp: vòng ReAct -> trả lời -> chờ duyệt -> ghi."""
+        builder.add_node("agent", self.call_model)
+        builder.add_node("tools", self.call_tools)
+        builder.add_node("answer", self.answer)
+        builder.add_node("ask_update_confirm", self.ask_update_confirm)
+        builder.add_node("read_update_decision", self.read_update_decision)
+        builder.add_node("apply_updates", self.apply_updates)
 
         builder.add_conditional_edges(
             "agent", self.route_agent, {"tools": "tools", END: "answer"}
@@ -531,5 +625,17 @@ class ReminderAgent:
             {"apply_updates": "apply_updates", END: END},
         )
         builder.add_edge("apply_updates", END)
+
+    def build_graph(self):
+        builder = StateGraph(GraphState)
+        self._add_report_branch(builder)
+        self._add_qa_branch(builder)
+
+        # Cả ba chỗ rẽ nhánh dùng chung một API, chỉ khác điểm xuất phát:
+        # START / ask_confirm / agent. set_conditional_entry_point() làm đúng
+        # việc này nhưng là API riêng cho mỗi START, đọc thành ngoại lệ.
+        builder.add_conditional_edges(
+            START, self.route_entry, {"report": "extract_tasks", "qa": "agent"}
+        )
 
         return self._with_tracing(builder.compile(checkpointer=self.checkpointer))

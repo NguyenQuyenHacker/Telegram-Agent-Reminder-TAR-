@@ -4,10 +4,23 @@
 -- Bảng checkpoint của LangGraph KHÔNG nằm ở đây: checkpointer.setup() tự tạo
 -- lúc app khởi động.
 
+-- Không đặt tên bảng là "group" vì đó là từ khoá SQL, phải quote ở mọi query.
+CREATE TABLE IF NOT EXISTS project_group (
+    -- uuid5(NS_GROUP, normalized_name): tên chuẩn hoá sinh ra id, nên hai biến
+    -- thể cách viết của cùng một nhóm không thể đẻ ra hai nhóm.
+    group_id        UUID PRIMARY KEY,
+    name            TEXT NOT NULL,
+    normalized_name TEXT NOT NULL UNIQUE,
+    -- Hai nhóm trùng tiền tố thì "TB-002" trỏ vào hai việc.
+    prefix          TEXT NOT NULL UNIQUE,
+    next_seq        INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS task (
     task_id          TEXT PRIMARY KEY,
     code             TEXT UNIQUE,
-    "group"          TEXT NOT NULL,
+    group_id         UUID NOT NULL REFERENCES project_group (group_id),
+
     content          TEXT NOT NULL,
     due_date         DATE,
     priority         TEXT NOT NULL CHECK (priority IN ('urgent', 'normal')),
@@ -22,20 +35,4 @@ CREATE TABLE IF NOT EXISTS task (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_due_scan ON task (status, next_remind_at);
-
--- Bộ đếm mã việc theo nhóm: "App Trưởng thôn, trưởng bản" -> TB-001, TB-002, ...
-CREATE TABLE IF NOT EXISTS group_code (
-    "group"  TEXT PRIMARY KEY,
-    prefix   TEXT NOT NULL UNIQUE,
-    next_seq INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS report (
-    report_id   TEXT PRIMARY KEY,
-    source_hash TEXT NOT NULL,
-    "group"     TEXT,
-    raw_text    TEXT NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_report_received_at ON report (received_at);
+CREATE INDEX IF NOT EXISTS idx_task_group ON task (group_id, due_date);

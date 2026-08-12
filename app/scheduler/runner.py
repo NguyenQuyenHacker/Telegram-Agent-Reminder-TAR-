@@ -9,6 +9,9 @@ from persistence.proc.checkpoints import purge_old_checkpoints
 
 log = logging.getLogger(__name__)
 
+# 3h sáng: ngoài khung giờ nhắc việc nên không đụng Job A
+_PURGE_HOUR = 3
+
 
 async def _purge_checkpoints() -> None:
     """Dọn checkpoint cũ. Lỗi thì ghi log rồi thôi — không được làm chết scheduler."""
@@ -28,11 +31,10 @@ def build_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
-    # 3h sáng, ngoài khung giờ nhắc việc nên không đụng Job A
     scheduler.add_job(
         _purge_checkpoints,
         "cron",
-        hour=3,
+        hour=_PURGE_HOUR,
         id="purge_checkpoints",
         max_instances=1,
         coalesce=True,

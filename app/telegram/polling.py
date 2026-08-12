@@ -31,7 +31,7 @@ def _build_dispatcher(app: FastAPI) -> Dispatcher:
     return dp
 
 
-async def start_dev_polling(app: FastAPI) -> tuple[Dispatcher, asyncio.Task]:
+async def start_dev_polling(app: FastAPI) -> tuple[Dispatcher, asyncio.Task[None]]:
     # Telegram không cho vừa webhook vừa getUpdates -> gỡ webhook cũ nếu còn
     await bot.delete_webhook(drop_pending_updates=True)
     dp = _build_dispatcher(app)
@@ -42,7 +42,7 @@ async def start_dev_polling(app: FastAPI) -> tuple[Dispatcher, asyncio.Task]:
     return dp, task
 
 
-async def stop_dev_polling(dp: Dispatcher, task: asyncio.Task) -> None:
+async def stop_dev_polling(dp: Dispatcher, task: asyncio.Task[None]) -> None:
     await dp.stop_polling()
     task.cancel()
     with suppress(asyncio.CancelledError):

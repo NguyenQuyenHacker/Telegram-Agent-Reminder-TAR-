@@ -23,6 +23,17 @@ from persistence.pool import get_session
 
 log = logging.getLogger(__name__)
 
+# UUID v1/v6 đếm thời gian bằng khoảng 100 nanosecond kể từ 1582-10-15, còn
+# timestamp() đếm giây kể từ 1970-01-01 — hai hằng số này bắc cầu giữa hai mốc.
+_UNIX_TO_UUID_EPOCH_SECONDS = 12_219_292_800
+_TICKS_PER_SECOND = 10_000_000
+# 60 bit timestamp của UUIDv6 nằm rải ở ba trường: time_high (32 bit đầu),
+# time_mid (16 bit kế), rồi 12 bit cuối ghép sau nibble số hiệu phiên bản.
+_TIME_HIGH_SHIFT = 28
+_TIME_MID_SHIFT = 12
+_UUID_VERSION_6 = 0x6000
+_UUID_VARIANT_RFC4122 = 0x80
+
 # checkpoint_blobs/_writes tham chiếu checkpoint qua (thread_id, checkpoint_ns,
 # checkpoint_id) nhưng KHÔNG có khoá ngoại, nên phải tự xoá con trước cha.
 _DELETE_SQL = """
@@ -62,19 +73,31 @@ def _cutoff_uuid(days: int) -> str:
     join sang cột thời gian nào (bảng không có sẵn cột đó).
     """
     cutoff = now_local() - timedelta(days=days)
-    # 100-nanosecond intervals kể từ 1582-10-15, theo chuẩn UUID v1/v6
-    ticks = int((cutoff.timestamp() + 12219292800) * 10_000_000)
-    hi, mid, lo = (ticks >> 28) & 0xFFFFFFFF, (ticks >> 12) & 0xFFFF, ticks & 0x0FFF
-    return str(UUID(fields=(hi, mid, 0x6000 | lo, 0x80, 0x00, 0x000000000000)))
+    ticks = int((cutoff.timestamp() + _UNIX_TO_UUID_EPOCH_SECONDS) * _TICKS_PER_SECOND)
+    hi = (ticks >> _TIME_HIGH_SHIFT) & 0xFFFFFFFF
+    mid = (ticks >> _TIME_MID_SHIFT) & 0xFFFF
+    low = ticks & 0x0FFF
+    return str(
+        UUID(
+            fields=(
+                hi,
+                mid,
+                _UUID_VERSION_6 | low,
+                _UUID_VARIANT_RFC4122,
+                0x00,
+                0x000000000000,
+            )
+        )
+    )
 
 
 def purge_old_checkpoints(days: int) -> int:
     """Xoá checkpoint cũ hơn `days` ngày. Trả về số dòng đã xoá ở bảng chính."""
     # execute() chứ không phải exec(): exec() của SQLModel dành cho select()
     # có kiểu, còn đây là SQL thô và ta cần rowcount.
-    with get_session() as s:
-        result = s.execute(text(_DELETE_SQL), {"cutoff_uuid": _cutoff_uuid(days)})
-        s.commit()
+    with get_session() as session:
+        result = session.execute(text(_DELETE_SQL), {"cutoff_uuid": _cutoff_uuid(days)})
+        session.commit()
         deleted = result.rowcount or 0
     log.info("PURGE: xoá %d checkpoint cũ hơn %d ngày", deleted, days)
     return deleted

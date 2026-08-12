@@ -4,11 +4,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.core.datetime_utils import next_window_start, now_local
-from app.core.priority import (
-    compute_next_remind_at,
-    is_within_send_window,
-    maybe_escalate,
-)
+from app.core.priority import compute_next_remind_at, is_within_send_window
 from app.core.reminder_digest import group_by_bucket
 from app.telegram.messages import REMINDER_PARSE_MODE, digest_text
 from app.telegram.sender import send_message
@@ -29,13 +25,19 @@ async def _defer_until_next_window(task: Task, now: datetime) -> None:
 
 
 async def _reschedule_after_digest(task: Task, now: datetime) -> None:
-    """Hẹn mốc kế tiếp sau khi tin gộp đã gửi xong, và nâng ưu tiên nếu tới lúc."""
+    """Hẹn mốc kế tiếp sau khi tin gộp đã gửi xong.
+
+    CỐ Ý không ghi maybe_escalate() xuống DB. Mức ưu tiên nâng do quá hạn là
+    trạng thái phái sinh từ due_date, ghi đè nó lên cột priority là mất mức ưu
+    tiên gốc của báo cáo — và vì maybe_escalate() trả urgent ngay khi thấy cột
+    đã urgent, việc đó thành một chiều: dời hạn ra tương lai cũng không hạ lại
+    được. Rổ hiển thị đã tính maybe_escalate() mỗi lượt gửi rồi.
+    """
     await asyncio.to_thread(
         reschedule_task,
         task.task_id,
         compute_next_remind_at(now),
         now,
-        maybe_escalate(task, now),
     )
 
 

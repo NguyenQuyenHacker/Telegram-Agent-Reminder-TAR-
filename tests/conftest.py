@@ -3,6 +3,8 @@ from datetime import date, datetime
 import pytest
 
 from app.core.datetime_utils import TZ
+from app.core.task_code import derive_prefix, group_uuid, normalize_group
+from persistence.models.project_group import ProjectGroup
 from persistence.models.task import Priority, Task, TaskStatus
 
 
@@ -21,10 +23,19 @@ def make_task(now):
         priority: Priority = Priority.normal,
         group: str = "Nhóm A",
     ) -> Task:
+        # Gắn sẵn dòng nhóm chứ không để None: task.group_name đọc qua nó, và
+        # test dựng Task trong bộ nhớ nên không có session nào nạp hộ.
+        group_id = group_uuid(group)
         return Task(
             task_id=code.lower(),
             code=code,
-            group=group,
+            group_id=group_id,
+            project_group=ProjectGroup(
+                group_id=group_id,
+                name=group,
+                normalized_name=normalize_group(group),
+                prefix=derive_prefix(group),
+            ),
             content=content,
             due_date=due_date,
             priority=priority,

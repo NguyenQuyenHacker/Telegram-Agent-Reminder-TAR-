@@ -3,7 +3,6 @@ from html import escape
 
 from app.core.datetime_utils import to_local, weekday_vi
 from app.core.reminder_digest import BUCKET_ORDER, NORMAL, OVERDUE, URGENT
-from app.core.task_text import normalize_content
 from persistence.models.task import Task
 
 # digest_text dựng HTML nên nơi gọi phải gửi kèm parse_mode này. Khai ở đây để
@@ -22,18 +21,9 @@ _ACTION_LABELS = {
 }
 
 
-def _display_content(task: Task) -> str:
-    """Nội dung đã gọt phần trùng lặp với các dòng khác của tin nhắn.
-
-    "ƯU TIÊN:" đã có rổ nói hộ, "(hạn 20/8)" đã có dòng 📅 nói hộ.
-    """
-    return normalize_content(task.content)
-
-
 def _task_label(task: Task) -> str:
     """Cách gọi một việc trong tin nhắn xác nhận: mã đứng trước cho người dùng gõ lại."""
-    content = _display_content(task)
-    return f"{task.code} {content}" if task.code else content
+    return f"{task.code} {task.content}" if task.code else task.content
 
 
 def _due_line(task: Task, now: datetime) -> str:
@@ -52,7 +42,7 @@ def _due_line(task: Task, now: datetime) -> str:
 def digest_text(buckets: dict[str, list[Task]], now: datetime) -> str:
     """Một tin duy nhất cho cả lượt nhắc, chia rổ theo mức ưu tiên.
 
-    group và content là dữ liệu người dùng nhập nên phải escape: một dấu '<'
+    Tên nhóm và content là dữ liệu người dùng nhập nên phải escape: một dấu '<'
     trong tên nhóm là đủ để Telegram từ chối cả tin nhắn.
     """
     total = sum(len(tasks) for tasks in buckets.values())
@@ -65,8 +55,8 @@ def digest_text(buckets: dict[str, list[Task]], now: datetime) -> str:
         lines.append(f"\n<b>{_BUCKET_HEADERS[bucket]} ({len(tasks)})</b>")
         for task in tasks:
             code = f"<code>{escape(task.code)}</code> · " if task.code else ""
-            group = escape(task.group, quote=False)
-            content = escape(_display_content(task), quote=False)
+            group = escape(task.group_name, quote=False)
+            content = escape(task.content, quote=False)
             lines.append(f"{code}{content}\n    📁 {group} · {_due_line(task, now)}")
 
     return "\n".join(lines)

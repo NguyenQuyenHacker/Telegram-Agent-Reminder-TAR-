@@ -7,9 +7,19 @@ from app.telegram.bot import bot
 
 log = logging.getLogger(__name__)
 
+# Telegram chập chờn thì thử lại, nhưng không quá lâu: người dùng đang chờ tin.
+_MAX_SEND_ATTEMPTS = 3
+_RETRY_BACKOFF_MULTIPLIER = 1
+_RETRY_MIN_WAIT_SECONDS = 1
+_RETRY_MAX_WAIT_SECONDS = 8
+
 _retry = retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    stop=stop_after_attempt(_MAX_SEND_ATTEMPTS),
+    wait=wait_exponential(
+        multiplier=_RETRY_BACKOFF_MULTIPLIER,
+        min=_RETRY_MIN_WAIT_SECONDS,
+        max=_RETRY_MAX_WAIT_SECONDS,
+    ),
     reraise=True,
 )
 

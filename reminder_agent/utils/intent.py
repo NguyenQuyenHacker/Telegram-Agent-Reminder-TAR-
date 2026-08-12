@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
 
 from reminder_agent.config.settings import create_google_genai, load_config
 from reminder_agent.prompts.loader import load_prompt
@@ -24,7 +25,7 @@ _REPORT_MARKERS = ("tiếp theo:", "hiện trạng:")
 
 
 @lru_cache(maxsize=1)
-def _approval_reader():
+def _approval_reader() -> Runnable:
     """LLM đọc ý người dùng khi họ trả lời bảng đầu việc: duyệt, sửa, hay bỏ.
 
     Dựng một lần rồi dùng lại. Không để module-level vì lúc đó import sẽ đòi có

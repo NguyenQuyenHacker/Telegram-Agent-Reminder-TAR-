@@ -11,10 +11,10 @@ import logging
 from contextlib import suppress
 
 from aiogram import Dispatcher
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import Message
 from fastapi import FastAPI
 
-from app.routers.webhooks import handle_task_callback, handle_text_message
+from app.routers.webhooks import handle_text_message
 from app.telegram.bot import bot
 
 log = logging.getLogger(__name__)
@@ -27,11 +27,6 @@ def _build_dispatcher(app: FastAPI) -> Dispatcher:
     async def _on_message(message: Message) -> None:
         if message.text:
             await handle_text_message(app.state.graph, message)
-
-    @dp.callback_query()
-    async def _on_callback(callback: CallbackQuery) -> None:
-        if (callback.data or "").startswith("task:"):
-            await handle_task_callback(callback)
 
     return dp
 

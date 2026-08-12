@@ -7,11 +7,16 @@ với **hai nhánh tách rời hoàn toàn** — không nhánh nào gọi sang n
 |---|---|---|
 | Kích hoạt bởi | Tin nhắn có `Tiếp theo:` / `Hiện trạng:` | Mọi tin nhắn còn lại |
 | Việc chính | Trích đầu việc rồi ghi vào DB | Tra cứu dữ liệu rồi trả lời |
-| Có tool không | Không | Có (2 tool đọc DB) |
-| Có dừng chờ người không | **Có** — `interrupt()` | Không |
-| Ghi dữ liệu | Có (`report`, `task`) | Không, chỉ đọc |
-| Số lần gọi LLM | 1 mỗi lượt trích + 1 mỗi lượt đọc ý người duyệt | 1–4 (kể cả vòng gọi tool) |
-| Node | `extract_tasks`, `ask_confirm`, `read_decision`, `save_to_db` | `agent`, `tools`, `answer` |
+| Có tool không | Không | Có (3 tool) |
+| Có dừng chờ người không | **Có** — `interrupt()` | **Có** — `interrupt()`, chỉ khi có đề xuất |
+| Ghi dữ liệu | Có (`report`, `task`) | Có (`task`), nhưng chỉ sau khi người dùng duyệt |
+| Số lần gọi LLM | 1 mỗi lượt trích + 1 mỗi lượt đọc ý người duyệt | 1–4 (kể cả vòng gọi tool), +1 nếu có đề xuất phải duyệt |
+| Node | `extract_tasks`, `ask_confirm`, `read_decision`, `save_to_db` | `agent`, `tools`, `answer`, `ask_update_confirm`, `read_update_decision`, `apply_updates` |
+
+Hai nhánh giống nhau ở đoạn cuối vì cùng một nguyên tắc: **LLM chỉ đề xuất, code
+chỉ ghi sau khi người dùng gật**. Nhánh 2 mọc thêm cái đuôi đó khi có tool
+`propose_task_update` — tool không được ghi, nên phần ghi phải nằm ở node riêng
+sau `interrupt()`.
 
 Mã nguồn: [`reminder_agent/graph.py`](../reminder_agent/graph.py)
 
@@ -36,9 +41,9 @@ tốn một lời gọi API nào.
 ```mermaid
 flowchart TD
     TG([Tin nhắn Telegram]) --> WH[webhook / polling<br/>handle_text_message]
-    WH --> AWAIT{Graph đang treo ở<br/>ask_confirm?}
+    WH --> AWAIT{Graph đang treo ở<br/>ask_confirm hoặc<br/>ask_update_confirm?}
 
-    AWAIT -->|Có| RESUME[[RESUME luồng 1<br/>Command resume = nguyên văn tin nhắn]]
+    AWAIT -->|Có| RESUME[[RESUME đúng chỗ đang treo<br/>Command resume = nguyên văn tin nhắn]]
 
     AWAIT -->|Không| CLS{classify_message<br/>so khớp chuỗi}
     CLS -->|có 'Tiếp theo:'| L1[[LUỒNG 1 — Báo cáo]]
@@ -50,8 +55,8 @@ flowchart TD
 ```
 
 Thứ tự kiểm tra rất quan trọng: **luôn hỏi "có đang treo không" trước**. Người
-dùng gõ "ok" khi đang chờ duyệt là câu trả lời cho bảng đầu việc, không phải
-câu hỏi mới — kiểm tra ngược lại sẽ đẩy "ok" vào nhánh hỏi đáp.
+dùng gõ "ok" khi đang chờ duyệt là câu trả lời cho thứ đang treo, không phải câu
+hỏi mới — kiểm tra ngược lại sẽ đẩy "ok" vào nhánh hỏi đáp.
 
 Điểm vào graph ([`route_entry`](../reminder_agent/graph.py)) chỉ nhìn một trường:
 
@@ -176,7 +181,7 @@ flowchart TD
     RT -->|có tool_calls<br/>và rounds < 3| TOOLS[tools — call_tools]
     RT -->|hết tool_calls<br/>hoặc đủ 3 vòng| ANS[answer]
 
-    TOOLS --> TL1[query_tasks / search_reports]
+    TOOLS --> TL1[query_tasks / search_reports<br/>propose_task_update]
     TL1 --> TL2[(đọc Postgres<br/>qua asyncio.to_thread)]
     TL2 --> TL3[ToolMessage<br/>lỗi cũng thành text, không raise]
     TL3 --> AG
@@ -184,21 +189,33 @@ flowchart TD
     ANS --> A1{content rỗng?}
     A1 -->|Có| A2[no_answer_text]
     A1 -->|Không| A3[nội dung LLM trả về]
-    A2 --> A4[Gửi Telegram]
+    A2 --> A4[Gửi Telegram<br/>+ bảng đề xuất nếu có]
     A3 --> A4
-    A4 --> END([END])
+    A4 --> RU{route_after_answer}
+    RU -->|không có pending_updates| END([END])
+    RU -->|có pending_updates| UC[ask_update_confirm<br/>interrupt]
+    UC --> UD[read_update_decision]
+    UD -->|approved| AP[apply_updates<br/>ghi DB + xác nhận từng dòng]
+    UD -->|còn lại| END
+    AP --> END
 
     style TOOLS fill:#e6f4ea,stroke:#34a853
+    style UC fill:#fef7e0,stroke:#f9ab00,stroke-width:2px
 ```
 
-### Hai tool
+### Ba tool
 
-Cả hai chỉ đọc, khai trong [`utils/tools/`](../reminder_agent/utils/tools/):
+Khai trong [`utils/tools/`](../reminder_agent/utils/tools/):
 
 | Tool | Trả về |
 |---|---|
 | `query_tasks` | Lọc theo nhóm / trạng thái / mức ưu tiên / khoảng hạn |
 | `search_reports` | Báo cáo cũ theo khoảng ngày, nguyên văn |
+| `propose_task_update` | `not_found` / `ambiguous` + ứng viên / `proposed` / `invalid_due_date` |
+
+**Không tool nào được ghi DB.** Hai cái đầu hiển nhiên chỉ đọc; cái thứ ba tra ra
+đúng dòng việc rồi dừng ở mức *đề xuất*. Nơi ghi duy nhất của nhánh này là node
+`apply_updates`, và nó chỉ chạy sau `interrupt()`.
 
 **Docstring của tool chính là prompt của nó.** Decorator `@tool` lấy nguyên
 docstring làm `description` gửi cho Gemini, và lấy type hint làm JSON schema tham
@@ -243,9 +260,23 @@ phần của mình:
 | `confirm_status` | ✅ | — |
 | `messages` | — | ✅ |
 | `tool_call_rounds` | — | ✅ |
+| `pending_updates` | — | ✅ |
+| `update_status` | — | ✅ |
+| `awaiting_due_task_ids` | ✅ ghi | ✅ đọc |
 
 `raw_report_text` vừa là dữ liệu vừa là công tắc rẽ nhánh: có giá trị thì vào
 luồng 1, `None` thì vào luồng 2.
+
+`awaiting_due_task_ids` là trường **duy nhất bắc cầu giữa hai luồng**:
+`save_to_db` ghi vào đó `task_id` của mọi việc chưa có hạn vừa hỏi, còn
+`call_model` đọc ra để nối một dòng ngữ cảnh vào system prompt — nếu không thì
+câu trả lời "3 ngày nữa" rơi vào luồng 2 mà LLM chẳng biết nó nói về việc nào.
+Danh sách tự cạn: việc nào đã có hạn thì bị lọc ra và không quay lại.
+
+Hai trường phải **reset tường minh ở mỗi lượt mới** tại
+[`webhooks.py`](../app/routers/webhooks.py): `raw_report_text` và
+`pending_updates`. Giá trị cũ còn nằm trong checkpoint thì lượt sau vừa trả lời
+xong đã hỏi duyệt một đề xuất người dùng không hề nhắc tới.
 
 ## Checkpointer — chỗ hai luồng gặp nhau
 
@@ -254,19 +285,43 @@ Cả hai dùng chung `AsyncPostgresSaver` với `thread_id = str(chat_id)`, dự
 
 - **Một chat = một thread duy nhất**, lịch sử hội thoại liên tục qua các lần
   restart.
-- Luồng 1 dừng ở `interrupt()` được là nhờ checkpointer này. Không có nó thì mất
+- Cả hai chỗ `interrupt()` dừng được là nhờ checkpointer này. Không có nó thì mất
   tiến trình là mất luôn bảng đang chờ duyệt.
 - Checkpoint cũ hơn `CHECKPOINT_RETENTION_DAYS` (mặc định 14) bị dọn lúc 3h sáng.
 
+## Hai chỗ `interrupt()`, hai cách xử "chưa rõ"
+
+Từ khi luồng 2 có đuôi duyệt riêng, graph có **hai** node chứa `interrupt()`.
+`_is_awaiting_confirm` ở [`webhooks.py`](../app/routers/webhooks.py) phải kiểm cả
+tập `{"ask_confirm", "ask_update_confirm"}` — sót một cái là câu "ok" của người
+dùng bị `classify_message` coi như câu hỏi mới, còn graph treo mãi ở `interrupt()`.
+
+Hai chỗ cố ý xử lý `unclear` **khác nhau**:
+
+| | `unclear` thì |
+|---|---|
+| `read_decision` (bảng đầu việc) | quay lại `ask_confirm`, bảng vẫn treo chờ |
+| `read_update_decision` (đề xuất) | **bỏ đề xuất**, về `END` |
+
+Trích lại một bảng đầu việc tốn một lời gọi LLM, còn dựng lại một đề xuất chỉ tốn
+một câu người dùng nhắn. Mà treo ở `interrupt()` thì nuốt mọi tin nhắn sau đó của
+họ — với thứ rẻ như đề xuất thì bỏ đi lợi hơn giữ.
+
+Cùng lý do đó, `read_update_decision` gộp luôn `edit` vào `abandoned`: đề xuất
+chỉ có ok hoặc thôi, muốn đổi thì nhắn lại từ đầu.
+
 ---
 
-## Đối chiếu nhanh với Job A và B
+## Đối chiếu nhanh với Job A
 
-Để khỏi lẫn: hai luồng nói trên **đều nằm trong Job C**. Hai job còn lại không
-đụng gì tới LLM hay graph.
+Để khỏi lẫn: hai luồng nói trên **đều nằm trong Job C**. Job còn lại không đụng
+gì tới LLM hay graph.
 
 | | Vào bằng đâu | LLM | Graph |
 |---|---|:---:|:---:|
-| **Job A** — quét việc tới hạn, gửi nhắc | APScheduler, mỗi phút | ❌ | ❌ |
-| **Job B** — nút Đã xong / Nhắc sau / Hoàn tác | callback Telegram | ❌ | ❌ |
+| **Job A** — quét việc tới hạn, gửi một tin nhắc gộp | APScheduler, mỗi phút | ❌ | ❌ |
 | **Job C** — 2 luồng ở tài liệu này | tin nhắn text | ✅ | ✅ |
+
+> Job B (nút Đã xong / Nhắc sau / Hoàn tác) đã bị xoá hẳn: tin nhắc gộp cả lô nên
+> không gắn nút cho từng việc được nữa. Mọi thao tác đó giờ nằm ở đuôi duyệt của
+> luồng 2.

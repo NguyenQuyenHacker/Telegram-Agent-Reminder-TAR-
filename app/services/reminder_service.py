@@ -6,14 +6,13 @@ from app.core.config import settings
 from app.core.datetime_utils import next_window_start, now_local
 from app.core.priority import (
     compute_next_remind_at,
-    interval_for,
     is_within_send_window,
     maybe_escalate,
 )
-from app.telegram.keyboards import reminder_keyboard
-from app.telegram.messages import REMINDER_PARSE_MODE, reminder_text
+from app.core.reminder_digest import group_by_bucket
+from app.telegram.messages import REMINDER_PARSE_MODE, digest_text
 from app.telegram.sender import send_message
-from persistence.models.task import Task, TaskStatus
+from persistence.models.task import Task
 from persistence.proc.tasks import get_due_tasks, reschedule_task
 
 log = logging.getLogger(__name__)
@@ -29,40 +28,23 @@ async def _defer_until_next_window(task: Task, now: datetime) -> None:
     )
 
 
-async def _send_and_reschedule(task: Task, now: datetime) -> None:
-    """Gửi một tin nhắn nhắc rồi hẹn mốc kế tiếp theo nhịp tương ứng.
-
-    Gửi lỗi thì để nguyên next_remind_at, lượt quét sau sẽ gặp lại việc này.
-    """
-    priority = maybe_escalate(task, now)
-    remind_status = (
-        TaskStatus.snoozed if task.status == TaskStatus.snoozed else TaskStatus.pending
-    )
-
-    log.info("DUE task_id=%s priority=%s -> gửi nhắc", task.task_id, priority.value)
-    try:
-        await send_message(
-            settings.telegram_chat_id,
-            reminder_text(task, now, priority),
-            reminder_keyboard(task.task_id),
-            parse_mode=REMINDER_PARSE_MODE,
-        )
-    except Exception:
-        log.exception("Gửi nhắc thất bại task_id=%s, để lượt sau thử lại", task.task_id)
-        return
-
+async def _reschedule_after_digest(task: Task, now: datetime) -> None:
+    """Hẹn mốc kế tiếp sau khi tin gộp đã gửi xong, và nâng ưu tiên nếu tới lúc."""
     await asyncio.to_thread(
         reschedule_task,
         task.task_id,
-        compute_next_remind_at(priority, remind_status, now),
+        compute_next_remind_at(now),
         now,
-        priority,
-        interval_for(priority, remind_status),
+        maybe_escalate(task, now),
     )
 
 
 async def run_job_a() -> None:
-    """Job A: quét việc tới hạn và chủ động nhắc. Không dùng AI, không phải graph."""
+    """Job A: quét việc tới hạn và chủ động nhắc. Không dùng AI, không phải graph.
+
+    Cả lô đi trong MỘT tin nhắn: mỗi việc một tin thì đến lượt quét đông việc là
+    người dùng nhận cả tràng thông báo, đọc không nổi và tắt luôn bot.
+    """
     if settings.telegram_chat_id is None:
         log.warning("Chưa cấu hình TELEGRAM_CHAT_ID, bỏ qua lượt quét")
         return
@@ -73,10 +55,22 @@ async def run_job_a() -> None:
         return
 
     log.info("SCAN: %d việc tới hạn", len(due_tasks))
-    within_window = is_within_send_window(now)
+
+    if not is_within_send_window(now):
+        for task in due_tasks:
+            await _defer_until_next_window(task, now)
+        return
+
+    try:
+        await send_message(
+            settings.telegram_chat_id,
+            digest_text(group_by_bucket(due_tasks, now), now),
+            parse_mode=REMINDER_PARSE_MODE,
+        )
+    except Exception:
+        # Không đụng next_remind_at: lượt quét sau gặp lại đúng lô này và thử lại.
+        log.exception("Gửi tin nhắc gộp thất bại, để lượt sau thử lại")
+        return
 
     for task in due_tasks:
-        if within_window:
-            await _send_and_reschedule(task, now)
-        else:
-            await _defer_until_next_window(task, now)
+        await _reschedule_after_digest(task, now)

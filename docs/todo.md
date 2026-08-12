@@ -23,7 +23,6 @@
 
 - Mỗi lượt nhắc chỉ gửi một tin, không gửi rời rạc
 - Chia nhóm ưu tiên cao, bình thường, quá hạn
-- Có nút thao tác nhanh cho từng task
 
 ## 5. Chia task lớn thành task con và theo dõi tiến độ
 

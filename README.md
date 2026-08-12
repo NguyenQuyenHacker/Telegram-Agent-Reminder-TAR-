@@ -5,25 +5,28 @@ việc, rồi chủ động nhắc cho tới khi việc được đánh dấu xo
 
 Bạn dán nguyên văn báo cáo vào Telegram → bot trích các dòng trong khối
 "Tiếp theo:", trình bảng để bạn duyệt → duyệt xong thì nó tự nhắc theo nhịp,
-nhắc gắt hơn khi việc quá hạn. Ngoài ra hỏi đáp được về dữ liệu đã lưu
-("20/7 tôi có việc gì không", "việc này hạn thứ mấy").
+gom cả lô vào một tin, nhắc gắt hơn khi việc quá hạn. Báo xong, hủy việc hay đổi
+hạn cũng nhắn thẳng cho bot ("TB-002 xong rồi", "dời QT-001 sang 2 tuần nữa"),
+và hỏi đáp được về dữ liệu đã lưu ("20/7 tôi có việc gì không").
 
 ---
 
-## Ba luồng xử lý
+## Hai luồng xử lý
 
-Dự án được chia theo ba job, đặt tên A/B/C và giữ nguyên tên đó trong log lẫn
+Dự án chia theo hai job, đặt tên A/C và giữ nguyên tên đó trong log lẫn
 docstring, để đọc log là biết đang ở luồng nào.
 
 | Job | Nhiệm vụ | Có dùng LLM? | Vào bằng đâu |
 |---|---|---|---|
-| **A** | Quét việc tới hạn và gửi nhắc | Không | APScheduler, mỗi phút |
-| **B** | Xử lý nút Đã xong / Nhắc sau / Hoàn tác | Không | callback từ Telegram |
-| **C** | Trích đầu việc từ báo cáo + hỏi đáp | Có | tin nhắn text |
+| **A** | Quét việc tới hạn và gửi một tin nhắc gộp | Không | APScheduler, mỗi phút |
+| **C** | Trích đầu việc từ báo cáo + hỏi đáp + cập nhật việc | Có | tin nhắn text |
 
-Chỉ Job C là graph LangGraph. Job A và B là code thuần — nhắc việc và bấm nút
-không cần suy luận, cho LLM vào đó chỉ thêm độ trễ, thêm chi phí và thêm chỗ
-để sai.
+Chỉ Job C là graph LangGraph. Job A là code thuần — nhắc việc không cần suy
+luận, cho LLM vào đó chỉ thêm độ trễ, thêm chi phí và thêm chỗ để sai.
+
+> Từng có Job B xử lý nút inline "Đã xong / Nhắc sau / Hoàn tác". Đã bỏ hẳn:
+> một lượt nhắc giờ là một tin gộp cho cả lô việc, không gắn nút cho từng việc
+> được nữa. Mọi thao tác chuyển sang nhắn tin với agent.
 
 ## Luồng Job C
 
@@ -35,16 +38,28 @@ tin nhắn ─→ classify_message ─┤                        ↑   ↑      
                                             tools      │   │              ↓
                                               ↓        │   └─ chưa rõ ─ read_decision
                                             answer     └───── sửa lại ────┤
-                                                                          ↓
-                                                                      save_to_db
+                                              │                           ↓
+                                    có đề xuất│                       save_to_db
+                                              ↓
+                                    ask_update_confirm ──→ read_update_decision
+                                       (interrupt)                  │
+                                                          duyệt ────┴──→ apply_updates
 ```
 
-Điểm đáng chú ý: nhánh báo cáo **dừng lại chờ người duyệt** bằng `interrupt()`.
-Bảng đầu việc không có nút bấm — bạn trả lời bằng tin nhắn thường ("ok",
-"thiếu việc số 3", "thôi bỏ đi"), và node `read_decision` dùng một LLM riêng để
-đọc ý định đó. Muốn sửa thì graph quay lại chính node `extract_tasks` với yêu
-cầu sửa kèm theo, trích lại từ đầu; trả lời chưa rõ ý thì quay về `ask_confirm`
-hỏi lại, bảng vẫn treo chờ.
+Hai nhánh có cùng hình dạng ở đoạn cuối vì cùng một nguyên tắc: **LLM chỉ đề
+xuất, người dùng gật thì code mới ghi DB**. Nhánh báo cáo dừng chờ duyệt bảng
+đầu việc; nhánh hỏi đáp dừng chờ duyệt đề xuất cập nhật của
+`propose_task_update` — tool đó cố ý không ghi gì cả.
+
+Không chỗ nào có nút bấm — bạn trả lời bằng tin nhắn thường ("ok", "thiếu việc
+số 3", "thôi bỏ đi"), và node `read_decision` / `read_update_decision` dùng
+chung một LLM riêng để đọc ý định đó. Muốn sửa bảng đầu việc thì graph quay lại
+chính node `extract_tasks` với yêu cầu sửa kèm theo, trích lại từ đầu; trả lời
+chưa rõ ý thì quay về `ask_confirm` hỏi lại, bảng vẫn treo chờ.
+
+Riêng đề xuất cập nhật thì trả lời chưa rõ là **bỏ luôn đề xuất** chứ không hỏi
+lại vòng vòng: dựng lại một đề xuất chỉ tốn một câu bạn nhắn, còn treo ở
+`interrupt()` là nuốt mọi tin nhắn sau đó của bạn.
 
 ### Mỗi tin nhắn là một lần chạy graph
 
@@ -77,31 +92,43 @@ bằng cách grep số hiệu.
 | Mã | Nội dung | Nơi thực thi |
 |---|---|---|
 | R1/R2 | Chỉ trích khối "Tiếp theo:", bỏ qua "Hiện trạng:" | `prompts/extract_system.md` |
-| R3 | Nhịp nhắc tra theo bảng (ưu tiên × trạng thái), đọc từ cấu hình | `app/core/priority.py` |
+| R3 | Nhịp nhắc đọc từ cấu hình (`PENDING_INTERVAL_MIN`), không hard-code | `app/core/priority.py` |
 | R4 | Việc thường tự nâng lên ưu tiên khi quá hạn, hoặc khi sắp tới hạn | `app/core/priority.py` |
 | R6 | Chỉ nhắc trong khung giờ cho phép, ngoài giờ thì dồn sang sáng hôm sau | `app/core/priority.py` |
 | R7 | `task_id` = hash(nhóm + nội dung đã bỏ `(hạn ...)`), nên gửi lại báo cáo — kể cả khi đã sửa hạn — chỉ cập nhật chứ không tạo bản trùng | `app/core/task_text.py` + `reminder_agent/graph.py` |
-| R8 | Chỉ hoàn tác được trong vòng 24 giờ kể từ lúc đánh dấu xong | `persistence/proc/tasks.py` |
+| R8 | Chỉ hoàn tác được trong `UNDO_WINDOW_HOURS` kể từ lúc đánh dấu xong / hủy | `persistence/proc/tasks.py` |
 | R9 | Không đoán hạn; việc thiếu hạn thì hỏi lại đúng một lần | `prompts/extract_system.md` |
+
+## Mã việc
+
+Mỗi việc có một mã ngắn dạng `TB-002` để bạn gõ lại trong tin nhắn. Tiền tố sinh
+tự động từ tên nhóm: lấy chữ cái đầu của **mọi** từ rồi giữ hai chữ cuối —
+"App Trưởng thôn, trưởng bản" → `atttb` → `TB`. Không có danh sách từ đệm nào
+phải bảo trì (`app/core/task_code.py`), số thứ tự do bảng `group_code` đếm.
+
+Mã này tách khỏi `task_id`: `task_id` là băm phục vụ R7, không ai gõ nổi. Mã chỉ
+cấp lúc tạo mới và **không đổi** kể cả khi tên nhóm sau đó đổi — nó đã được in
+ra cho bạn rồi.
 
 ## Cấu trúc thư mục
 
 ```
 app/                     Tầng ứng dụng — FastAPI, Telegram, lịch chạy
-  core/                  Cấu hình, thời gian, quy tắc ưu tiên, chuẩn hoá nội dung việc
+  core/                  Cấu hình, thời gian, ưu tiên, mã việc, gom rổ tin nhắc
   routers/webhooks.py    Nhận update từ Telegram
   scheduler/runner.py    APScheduler: Job A + dọn checkpoint
-  services/              Job A (reminder_service), Job B (callback_service)
-  telegram/              Bot, bàn phím, soạn tin nhắn, gửi có retry
+  services/              Job A (reminder_service)
+  telegram/              Bot, soạn tin nhắn, gửi có retry
 reminder_agent/          Job C — agent LangGraph
   config/models.yaml     Tham số LLM từng vai (KHÔNG chứa khoá bí mật)
   prompts/*.md           Prompt, tách khỏi code
-  utils/tools/           Hai tool tra cứu, chỉ đọc
+  utils/tools/           Hai tool tra cứu + một tool đề xuất cập nhật
   graph.py               Toàn bộ node là method của ReminderAgent
 persistence/             Tầng dữ liệu
   models/                Bảng SQLModel
   proc/                  Truy vấn, gọi qua asyncio.to_thread
-  schema/*.sql           DDL, chạy tay một lần
+  schema/schema.sql      Toàn bộ DDL trong một file, chạy tay một lần
+tests/                   pytest cho phần logic thuần (không đụng DB, không gọi LLM)
 run.py                   Điểm chạy local trên Windows
 ```
 
@@ -120,12 +147,27 @@ copy .env.example .env                             # rồi điền giá trị th
 Tạo bảng — chưa có bước tự động, chạy tay một lần vào Postgres của bạn:
 
 ```bash
-psql "$DATABASE_URL" -f persistence/schema/01_task.sql
-psql "$DATABASE_URL" -f persistence/schema/02_report.sql
+psql "$DATABASE_URL" -f persistence/schema/schema.sql
+```
+
+Toàn bộ DDL nằm trong đúng file đó, không có file migration tăng dần. Nếu bạn
+đang giữ DB từ bản cũ (còn cột `remind_interval_min`, còn trạng thái `snoozed`)
+thì file này toàn `CREATE TABLE IF NOT EXISTS` nên **không** cập nhật bảng sẵn
+có — dựng lại:
+
+```bash
+psql "$DATABASE_URL" -c 'DROP TABLE IF EXISTS task, report;'
+psql "$DATABASE_URL" -f persistence/schema/schema.sql
 ```
 
 Bảng checkpoint của LangGraph thì không cần làm gì, `checkpointer.setup()` tự
 tạo lúc khởi động.
+
+Chạy test:
+
+```bash
+pytest tests -q
+```
 
 Chạy:
 
@@ -157,10 +199,8 @@ Tinh chỉnh hành vi (đều có giá trị mặc định):
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `URGENT_PENDING_INTERVAL_MIN` | 5 | Nhịp nhắc việc gấp |
-| `NORMAL_PENDING_INTERVAL_MIN` | 30 | Nhịp nhắc việc thường |
-| `URGENT_SNOOZED_INTERVAL_MIN` | 10 | Nhịp sau khi bấm "Nhắc sau" (việc gấp) |
-| `NORMAL_SNOOZED_INTERVAL_MIN` | 60 | Nhịp sau khi bấm "Nhắc sau" (việc thường) |
+| `PENDING_INTERVAL_MIN` | 30 | Nhịp nhắc, dùng chung cho mọi việc chưa xong |
+| `UNDO_WINDOW_HOURS` | 24 | Hoàn tác "đã xong" / "đã hủy" trong ngần này giờ (R8) |
 | `ESCALATION_OVERDUE_DAYS` | 1 | Quá hạn bao nhiêu ngày thì nâng lên ưu tiên (R4) |
 | `ESCALATION_DUE_SOON_DAYS` | 3 | Còn bao nhiêu ngày tới hạn thì nâng lên ưu tiên (R4) |
 | `REMINDER_WINDOW_START_HOUR` | 8 | Đầu khung giờ được nhắc |
@@ -176,14 +216,15 @@ Tinh chỉnh hành vi (đều có giá trị mặc định):
 
 ## Prompt và model
 
-Bốn prompt, mỗi cái một file `.md`:
+Năm prompt, mỗi cái một file `.md`:
 
 | File | Dùng ở |
 |---|---|
 | `extract_system.md` | Trích đầu việc từ báo cáo |
 | `extract_retry.md` | Nối thêm vào prompt trên khi người dùng yêu cầu sửa |
 | `agent_system.md` | Nhánh hỏi đáp |
-| `decision_system.md` | Đọc ý định duyệt / sửa / bỏ |
+| `decision_system.md` | Đọc ý định duyệt / sửa / bỏ (dùng cho cả hai chốt duyệt) |
+| `_date_rules.md` | Luật quy đổi "2 ngày nữa" → ngày ISO, nối vào **cả hai** prompt trên |
 
 Prompt viết bằng tiếng Anh, nhưng cố ý giữ tiếng Việt ở ba chỗ: từ khoá cần
 khớp mặt chữ trong báo cáo (`Tiếp theo:`, `Hiện trạng:`, `ƯU TIÊN`), ví dụ câu
@@ -224,6 +265,24 @@ pip install "langfuse>=3.0.0" "langchain>=0.3,<0.4"
 để điền field của `Settings` nhưng **không ghi vào `os.environ`**, mà Langfuse
 lại đọc thẳng `os.getenv("LANGFUSE_*")`. Thiếu dòng đó thì khoá có trong `.env`
 vẫn coi như không có.
+
+### Bẫy tốc độ: prompt chưa đẩy lên Langfuse
+
+Hỏi Langfuse một prompt **không tồn tại** tốn **1–3 giây**. Nó không raise — trả
+bản `.md` rồi thôi — nhưng cũng **không nhớ là hỏng**, nên lượt chat sau lại đi
+hỏi lại y hệt. Mỗi lượt chat nạp 2 prompt ⇒ mất vài giây trước khi kịp gọi LLM.
+
+`loader.py` xử bằng cách nhớ tên hỏng (`_missing_on_langfuse`) và thôi không hỏi
+lại trong suốt tiến trình, còn `warm_up()` trả trước khoản chờ đó lúc khởi động.
+Hệ quả:
+
+- Khởi động chậm thêm ~2 giây cho **mỗi** prompt chưa có trên Langfuse.
+- Sau đó mọi lượt `load_prompt` là 0ms.
+- **Đẩy prompt lên Langfuse rồi thì phải khởi động lại** để nó được hỏi lại —
+  cùng ràng buộc với việc sửa file `.md`.
+
+Không muốn chờ lúc khởi động thì hoặc đẩy đủ 5 prompt lên Langfuse, hoặc bỏ
+trống `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (mất luôn trace).
 
 ### Đọc trace
 

@@ -7,23 +7,7 @@ from app.core.datetime_utils import (
     next_window_start,
     to_local,
 )
-from persistence.models.task import Priority, Task, TaskStatus
-
-_INTERVAL_TABLE = {
-    (Priority.urgent, TaskStatus.pending): "urgent_pending_interval_min",
-    (Priority.urgent, TaskStatus.snoozed): "urgent_snoozed_interval_min",
-    (Priority.normal, TaskStatus.pending): "normal_pending_interval_min",
-    (Priority.normal, TaskStatus.snoozed): "normal_snoozed_interval_min",
-}
-
-
-def interval_for(priority: Priority, task_status: TaskStatus) -> int:
-    """R3: bảng nhịp nhắc, đọc từ cấu hình chứ không hard-code."""
-    # Chỉ snoozed có nhịp riêng, mọi trạng thái còn lại dùng nhịp của pending
-    lookup_status = (
-        task_status if task_status == TaskStatus.snoozed else TaskStatus.pending
-    )
-    return getattr(settings, _INTERVAL_TABLE[priority, lookup_status])
+from persistence.models.task import Priority, Task
 
 
 def maybe_escalate(task: Task, reference_dt: datetime) -> Priority:
@@ -32,6 +16,9 @@ def maybe_escalate(task: Task, reference_dt: datetime) -> Priority:
     Ba nguồn dẫn tới urgent — gốc đã urgent, sắp tới hạn, đã quá hạn — đều ra
     cùng một mức. Nguyên nhân không lưu lại ở đây; tin nhắn nhắc tự nói ra qua
     dòng hạn ("Còn 2 ngày" hay "Quá hạn 22 ngày").
+
+    Mức ưu tiên không còn ảnh hưởng nhịp nhắc (chỉ còn một nhịp duy nhất), nó
+    quyết định việc nằm rổ nào trong tin nhắc gộp.
     """
     if task.priority == Priority.urgent:
         return Priority.urgent
@@ -60,11 +47,7 @@ def clamp_to_window(moment: datetime) -> datetime:
     return local_moment
 
 
-def compute_next_remind_at(
-    priority: Priority, task_status: TaskStatus, reference_dt: datetime
-) -> datetime:
-    """Mốc nhắc kế tiếp: cộng nhịp tương ứng rồi kéo về trong khung giờ."""
-    unclamped = to_local(reference_dt) + timedelta(
-        minutes=interval_for(priority, task_status)
-    )
+def compute_next_remind_at(reference_dt: datetime) -> datetime:
+    """R3: mốc nhắc kế tiếp — cộng nhịp cấu hình rồi kéo về trong khung giờ."""
+    unclamped = to_local(reference_dt) + timedelta(minutes=settings.pending_interval_min)
     return clamp_to_window(unclamped)

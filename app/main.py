@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,7 @@ from app.telegram.bot import bot, set_webhook
 from app.telegram.polling import start_dev_polling, stop_dev_polling
 from reminder_agent.config.settings import load_config
 from reminder_agent.graph import ReminderAgent
+from reminder_agent.prompts.loader import warm_up as warm_up_prompts
 
 # Đổ .env vào os.environ. pydantic-settings đã tự đọc .env cho Settings, nhưng
 # chỉ để điền field của nó chứ KHÔNG ghi vào os.environ — nên thư viện nào đọc
@@ -41,6 +43,8 @@ async def lifespan(app: FastAPI):
         agent = ReminderAgent(checkpointer)
         app.state.agent = agent
         app.state.graph = agent.build_graph()
+        # Trả trước tiền chờ mạng của Langfuse, đừng để nó rơi vào tin nhắn đầu
+        await asyncio.to_thread(warm_up_prompts)
         models = load_config()["models"]
         log.info(
             "Graph Job C sẵn sàng: %d tool, extract=%s, agent=%s",

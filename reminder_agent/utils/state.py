@@ -28,3 +28,11 @@ class GraphState(TypedDict, total=False):
     confirm_reply: str | None
     confirm_status: Literal["approved", "edit", "abandoned", "unclear"] | None
     tool_call_rounds: int
+    # Đề xuất cập nhật do propose_task_update sinh ra, chờ người dùng duyệt.
+    # apply_updates ghi xong thì dọn về rỗng.
+    pending_updates: list[dict]
+    update_reply: str | None
+    update_status: Literal["approved", "abandoned", "unclear"] | None
+    # Việc vừa lưu mà chưa có hạn: câu trả lời kế tiếp của người dùng nhiều khả
+    # năng là hạn cho chúng. Tự cạn dần khi việc đã có hạn.
+    awaiting_due_task_ids: list[str]

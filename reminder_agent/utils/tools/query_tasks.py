@@ -20,7 +20,7 @@ async def query_tasks(
 
     Args:
         group: tên nhóm dự án, ví dụ "App Trưởng thôn, trưởng bản".
-        status: "pending", "done" hoặc "snoozed".
+        status: "pending", "done" hoặc "cancelled".
         priority: "urgent" hoặc "normal".
         due_from: hạn từ ngày, dạng "YYYY-MM-DD".
         due_to: hạn đến ngày, dạng "YYYY-MM-DD".
@@ -36,7 +36,8 @@ async def query_tasks(
     today = now_local().date()
     return [
         {
-            "task_id": task.task_id,
+            # code là thứ người dùng gõ lại được, task_id thì không
+            "code": task.code,
             "group": task.group,
             "content": task.content,
             "due_date": task.due_date.isoformat() if task.due_date else None,

@@ -343,25 +343,6 @@ Hiện `save_to_db` (dòng 210-211) gửi `missing_due_date_prompt` rồi **bỏ
 
 ---
 
-## Kiểm thử
-
-Dự án **chưa có test** (`TEST/test_bot.py` chỉ là prototype). Thêm pytest cho phần logic thuần:
-
-- `requirements.txt`: `pytest`, `pytest-asyncio`.
-- `tests/test_task_code.py` — `derive_prefix` (tên nhiều từ, tên 1 từ, tên có dấu), `format_code`, `parse_code` (nhận "tb2"/"TB-2"/"#TB-002"; từ chối "xong rồi").
-- `tests/test_reminder_digest.py` — `group_by_bucket`: quá hạn / urgent / normal, task chưa có hạn, danh sách rỗng.
-- `tests/test_messages.py` — `digest_text` 3 rổ, `_due_line` các mốc âm/0/dương.
-
-Chạy tay đầu-cuối (`python run.py`, chế độ polling):
-
-1. **GĐ 0:** `DROP TABLE task, report;` rồi `psql "$DATABASE_URL" -f persistence/schema/schema.sql` → `\d task` cho thấy có `code`, `cancelled_at`, không còn `remind_interval_min`, `status` chỉ nhận 3 giá trị. Bot khởi động không lỗi import sau khi xóa `keyboards.py` / `callback_service.py`.
-2. **GĐ 1:** dán báo cáo → "ok" → chờ tin nhắc thấy `TB-001`. Nhắn "TB-001 xong rồi" → bot đề xuất → "ok" → `status = done`. Nhắn "hủy việc viết tài liệu" → khớp nhiều thì bot liệt kê mã, chọn 1 → "ok" → `cancelled`. Lượt scan kế: cả hai **không** xuất hiện lại. Nhắn "thôi" ở bước đề xuất → DB không đổi gì. Kiểm tra thêm: đang treo ở `ask_update_confirm` mà dán một báo cáo mới → phải xử lý đúng, không nuốt mất báo cáo.
-3. **GĐ 2:** tạm đặt `PENDING_INTERVAL_MIN=1` để 4-5 task cùng tới hạn → nhận **một** tin duy nhất, chia 3 rổ, mỗi dòng có mã, không có nút nào. Đặt giờ máy ngoài 8h-18h → không gửi gì, `next_remind_at` dời sang 8h hôm sau.
-4. **GĐ 3:** "TB-003 dời sang 2 tuần nữa" → bot nhắn lại đúng ngày ISO + thứ → "ok" → `due_date` và `next_remind_at` đổi. Dán báo cáo có dòng không hạn → bot hỏi → trả lời "3 ngày nữa" → bot đề xuất đúng ngày cho đúng task đó.
-5. Mở Langfuse: mỗi lượt sửa task tốn **2** lời gọi LLM (agent gọi tool + `read_update_decision` đọc "ok"); Job A không có lời gọi nào.
-
----
-
 ## Thứ tự thực thi
 
 ```

@@ -17,10 +17,12 @@ class Settings(BaseSettings):
     # timeout, prompt, số vòng gọi tool) nằm ở reminder_agent/config/models.yaml.
     google_api_key: str
 
-    urgent_pending_interval_min: int = 5
-    urgent_snoozed_interval_min: int = 10
-    normal_pending_interval_min: int = 30
-    normal_snoozed_interval_min: int = 60
+    # Một nhịp duy nhất cho mọi việc chưa xong. Trước đây có bảng 4 nhịp (ưu
+    # tiên × trạng thái) nhưng mỗi lượt nhắc giờ chỉ gửi MỘT tin gộp cho cả lô,
+    # nên nhịp riêng từng việc không còn nghĩa gì.
+    pending_interval_min: int = 30
+    # Hoàn tác "đã xong" / "đã hủy" chỉ trong ngần này giờ (R8)
+    undo_window_hours: int = 24
     escalation_overdue_days: int = 1
     # Còn ngần này ngày (hoặc ít hơn) tới hạn mà chưa xong thì cũng nâng ưu tiên
     escalation_due_soon_days: int = 3

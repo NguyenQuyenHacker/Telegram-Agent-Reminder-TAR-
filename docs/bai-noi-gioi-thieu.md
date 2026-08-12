@@ -30,24 +30,26 @@ Câu chốt để mở bài:
 
 ### 1.1. Nói bằng lời
 
-Toàn bộ hệ thống chỉ có **ba việc lớn**, và tôi đặt tên chúng là A, B, C cho dễ
+Toàn bộ hệ thống chỉ có **hai việc lớn**, và tôi đặt tên chúng là A, C cho dễ
 gọi:
 
 | Tên | Việc gì | Ai kích hoạt |
 |---|---|---|
 | **A** | Đến giờ thì nhắn nhắc | Đồng hồ hẹn giờ, mỗi phút chạy một lần |
-| **B** | Bạn bấm nút trên tin nhắn nhắc | Bạn bấm |
 | **C** | Bạn gửi chữ vào chat | Bạn gõ |
 
 Điểm quan trọng cần nhấn mạnh khi trình bày:
 
-> **Chỉ có luồng C dùng đến AI.** Hai luồng A và B là code thường, không hỏi AI
-> câu nào.
+> **Chỉ có luồng C dùng đến AI.** Luồng A là code thường, không hỏi AI câu nào.
 
-Vì sao? Vì "đến giờ thì nhắn" và "bấm nút thì đổi trạng thái" là những việc có
-quy tắc rõ ràng, một cái `if` là xong. Cho AI vào đó chỉ tốn tiền, chậm hơn, và
-thêm chỗ để sai. AI chỉ được dùng ở chỗ nó thật sự hơn người: **đọc hiểu một
-đoạn văn tiếng Việt viết tự do**.
+Vì sao? Vì "đến giờ thì nhắn" là việc có quy tắc rõ ràng, một cái `if` là xong.
+Cho AI vào đó chỉ tốn tiền, chậm hơn, và thêm chỗ để sai. AI chỉ được dùng ở chỗ
+nó thật sự hơn người: **đọc hiểu một đoạn văn tiếng Việt viết tự do**.
+
+> **Từng có luồng B** lo mấy cái nút "Đã xong / Nhắc sau" gắn dưới tin nhắc. Tôi
+> đã bỏ hẳn: một lượt nhắc bây giờ là **một tin gộp cho cả lô việc**, không có
+> chỗ gắn nút riêng cho từng việc nữa. Mọi thao tác chuyển sang nhắn tin — mà
+> nhắn tin thì đã có sẵn luồng C đọc hiểu.
 
 ### 1.2. Sơ đồ tổng
 
@@ -57,7 +59,7 @@ và hai dịch vụ bên ngoài.
 ```mermaid
 flowchart TB
     subgraph NGUOIDUNG["NGƯỜI DÙNG"]
-        TG["App Telegram<br/>gõ báo cáo · gõ câu hỏi · bấm nút"]
+        TG["App Telegram<br/>gõ báo cáo · gõ câu hỏi · báo xong việc"]
     end
 
     subgraph TELE["MÁY CHỦ TELEGRAM"]
@@ -66,8 +68,7 @@ flowchart TB
 
     subgraph TAR["MÁY CHỦ TAR — FastAPI"]
         DOOR["Cửa nhận /webhooks/telegram<br/>kiểm chữ ký bí mật"]
-        B["LUỒNG B — nút bấm<br/>Đã xong · Nhắc sau · Hoàn tác<br/><b>không AI</b>"]
-        C["LUỒNG C — chữ<br/>trích việc · chờ duyệt · hỏi đáp<br/><b>CÓ AI</b>"]
+        C["LUỒNG C — chữ<br/>trích việc · chờ duyệt · hỏi đáp<br/>cập nhật việc · chờ duyệt<br/><b>CÓ AI</b>"]
         A["LUỒNG A — đồng hồ hẹn giờ<br/>mỗi phút quét việc tới hạn<br/>3h sáng dọn dữ liệu tạm<br/><b>không AI</b>"]
     end
 
@@ -84,19 +85,16 @@ flowchart TB
 
     TG -- "① tin nhắn vào" --> RELAY
     RELAY --> DOOR
-    DOOR -- "là nút" --> B
     DOOR -- "là chữ" --> C
 
     C -.-> GEM
     C -.-> LF
 
     A -- "② chủ động nhắn ra" --> RELAY
-    B -- "②" --> RELAY
     C -- "②" --> RELAY
     RELAY --> TG
 
     A --> T
-    B --> T
     C --> T
     C --> R
     C --> CP
@@ -104,7 +102,6 @@ flowchart TB
     style C fill:#ffe8cc,stroke:#e8590c,stroke-width:2px
     style GEM fill:#ffe8cc,stroke:#e8590c
     style A fill:#d3f9d8,stroke:#2f9e44
-    style B fill:#d3f9d8,stroke:#2f9e44
 ```
 
 > Sơ đồ này vẽ bằng Mermaid. GitHub và VS Code (bấm `Ctrl+Shift+V`) tự dựng ra
@@ -115,14 +112,14 @@ Ba điều nên chỉ vào sơ đồ khi nói:
 **① và ② là hai đường khác nhau.** Mũi tên vào và mũi tên ra không phải một —
 giải thích ở mục 1.3 ngay dưới.
 
-**Luồng A không có mũi tên nào đi VÀO nó.** Hai luồng kia đều có mũi tên từ cửa
-nhận, riêng A thì không — vì nó do đồng hồ kích chứ không do bạn. Nhưng nó vẫn
-có mũi tên đi RA. Đó chính là thứ làm nên bot nhắc việc: bạn không làm gì mà nó
-vẫn nhắn.
+**Luồng A không có mũi tên nào đi VÀO nó.** Luồng C có mũi tên từ cửa nhận,
+riêng A thì không — vì nó do đồng hồ kích chứ không do bạn. Nhưng nó vẫn có mũi
+tên đi RA. Đó chính là thứ làm nên bot nhắc việc: bạn không làm gì mà nó vẫn
+nhắn.
 
-**Chỉ luồng C mới có mũi tên đi sang Gemini** (hai mũi tên nét đứt màu cam). Hai
-luồng còn lại nằm gọn trong máy chủ và cơ sở dữ liệu. Nhìn sơ đồ là thấy ngay AI
-chiếm phần nhỏ tới mức nào.
+**Chỉ luồng C mới có mũi tên đi sang Gemini** (hai mũi tên nét đứt màu cam).
+Luồng A nằm gọn trong máy chủ và cơ sở dữ liệu. Nhìn sơ đồ là thấy ngay AI chiếm
+phần nhỏ tới mức nào.
 
 ### 1.2b. Vòng đời một tin nhắn — nhìn theo thời gian
 
@@ -167,8 +164,8 @@ sequenceDiagram
     rect rgb(225, 245, 230)
     note over Ban,DB: Nhắc việc — không ai kích, đồng hồ tự chạy
     TAR->>DB: việc nào tới giờ nhắc?
-    DB-->>TAR: 1 việc
-    TAR->>TG: gửi tin nhắc kèm 2 nút
+    DB-->>TAR: 4 việc
+    TAR->>TG: gửi MỘT tin gộp, chia 3 rổ
     TG-->>Ban: thấy tin nhắc
     end
 ```
@@ -176,7 +173,7 @@ sequenceDiagram
 Ba điểm nhấn khi nói:
 
 - **Dòng ghi chú ở giữa** — máy chủ không ngồi chờ suốt 2 tiếng, nó ghi sổ rồi
-  nghỉ hẳn. Chi tiết ở mục 4.5.
+  nghỉ hẳn. Chi tiết ở mục 3.5.
 - **Khối cuối màu xanh không có mũi tên nào bắt đầu từ "Bạn"** — đó là luồng A.
 - **Cả sơ đồ chỉ có 2 lần gọi Gemini**, còn lại là đọc ghi cơ sở dữ liệu.
 
@@ -241,9 +238,9 @@ Nên hệ thống có sẵn đường lùi thứ hai:
 | **Hỏi vòng** | Tôi gọi sang Telegram, vài giây một lần hỏi "có tin mới không?" | Không | Chạy thử trên máy cá nhân |
 
 Điểm hay: **phần xử lý phía sau y hệt nhau**. Dù tin nhắn tới bằng đường nào,
-nó cũng dẫn vào cùng một hàm rồi đi tiếp vào ba luồng A/B/C. Chuyển qua lại giữa
-hai chế độ chỉ bằng cách điền hay bỏ trống một dòng trong file cấu hình, không
-phải sửa một dòng code nào.
+nó cũng dẫn vào cùng một hàm rồi đi tiếp vào luồng C. Chuyển qua lại giữa hai
+chế độ chỉ bằng cách điền hay bỏ trống một dòng trong file cấu hình, không phải
+sửa một dòng code nào.
 
 ---
 
@@ -259,16 +256,20 @@ Nhắc xong thì cột đó được đẩy lên một mốc mới. Cứ thế l
 
 ### 2.2. Ba quy tắc làm nó "biết điều"
 
-**Quy tắc 1 — nhắc dày hay thưa tuỳ mức quan trọng.**
+**Quy tắc 1 — cả lô đi trong MỘT tin nhắn.**
 
-| Việc | Trạng thái | Nhắc lại sau |
-|---|---|---|
-| Gấp | đang chờ | 5 phút |
-| Thường | đang chờ | 30 phút |
-| Gấp | vừa bấm "Nhắc sau" | 10 phút |
-| Thường | vừa bấm "Nhắc sau" | 60 phút |
+Lượt quét thấy 5 việc tới hạn thì gửi **một** tin, không phải 5 tin. Trong tin
+đó việc được chia ba rổ, xếp theo thứ tự cần nhìn trước: **quá hạn → ưu tiên →
+bình thường**.
 
-Bốn con số này nằm trong file cấu hình, sửa được mà không phải đụng vào code.
+Trước kia mỗi việc một tin. Đến lượt quét đông việc là người dùng nhận cả tràng
+thông báo, đọc không nổi rồi tắt luôn bot — nhắc nhiều quá thành ra không nhắc
+được gì.
+
+Nhịp nhắc chỉ còn **một con số duy nhất** trong file cấu hình
+(`PENDING_INTERVAL_MIN`, mặc định 30 phút). Trước đây có bảng bốn nhịp theo mức
+ưu tiên, nhưng gộp tin rồi thì cả lô đi cùng một lượt, nhịp riêng từng việc
+không còn nghĩa gì.
 
 **Quy tắc 2 — việc thường tự động lên thành việc gấp.**
 
@@ -276,62 +277,51 @@ Có hai trường hợp:
 - còn **3 ngày nữa** là tới hạn;
 - đã **quá hạn 1 ngày**.
 
-Rơi vào một trong hai thì việc đó tự lên mức gấp, nghĩa là từ nhắc 30 phút một
-lần chuyển sang 5 phút một lần. Nó tự gắt lên khi bạn càng chậm.
+Rơi vào một trong hai thì việc đó tự lên mức gấp. Mức gấp giờ không đổi nhịp
+nhắc nữa mà quyết định **việc nằm rổ nào** trong tin gộp — nó nhảy lên đầu tin
+nhắn thay vì nằm cuối.
 
 **Quy tắc 3 — không nhắc ngoài giờ làm việc.**
 
 Chỉ nhắc trong khoảng **8h đến 18h**. Việc đến hạn lúc 11h đêm thì không nhắn
-lúc đó, mà dời sang 8h sáng hôm sau. Nếu không có quy tắc này thì với việc gấp
-nhắc 5 phút/lần, bạn sẽ bị đánh thức cả đêm.
+lúc đó, mà dời sang 8h sáng hôm sau.
 
 ### 2.3. Tin nhắn nhắc trông như thế nào
 
 ```
-🔴 App Trưởng thôn, trưởng bản
-Gửi BCKTKT cho TĐG
-⏰ Quá hạn 3 ngày (19/7, thứ Bảy)
+🔔 Bạn có 4 việc cần làm
 
-[ ✅ Đã xong ]  [ ⏰ Nhắc sau ]
+⛔ QUÁ HẠN (2)
+TB-002 · Gửi BCKTKT cho TĐG
+    📁 App Trưởng thôn, trưởng bản · 📅 Hạn 19/07 · ⏰ Quá hạn 3 ngày
+TB-005 · Quay demo
+    📁 App Trưởng thôn, trưởng bản · 📅 Hạn 17/07 · ⏰ Quá hạn 5 ngày
+
+🔴 ƯU TIÊN (1)
+BC-001 · Bổ sung quy trình tin học hóa
+    📁 Hệ thống báo cáo · 📅 Hạn 24/07 · ⏳ Còn 2 ngày
+
+🔵 BÌNH THƯỜNG (1)
+...
 ```
 
-Hai nút ở dưới chính là cửa vào của luồng B.
+Không có nút nào. Cái **mã việc ở đầu mỗi dòng** (`TB-002`) mới là cửa vào của
+luồng C: bạn gõ lại nó trong tin nhắn để báo xong, hủy, hay đổi hạn.
+
+Mã đó sinh tự động từ tên nhóm — lấy chữ cái đầu của mọi từ rồi giữ hai chữ
+cuối: "App **T**rưởng thôn, trưởng **b**ản" → `TB`. Không có danh sách từ đệm
+nào phải bảo trì, và mã không đổi kể cả khi tên nhóm sau này đổi, vì nó đã được
+in ra cho người dùng rồi.
+
+**Gửi lỗi thì không dời mốc.** Nếu Telegram từ chối tin gộp, hệ thống **không**
+đụng vào cột "lần nhắc kế tiếp" của việc nào cả — lượt quét sau gặp lại đúng lô
+đó và thử lại. Làm ngược lại thì một lần mạng chập là cả lô im lặng luôn.
 
 ---
 
-## 3. Luồng B — xử lý nút bấm
+## 3. Luồng C — bộ não AI, phần chính của đề tài
 
-### 3.1. Ba nút, ba hành động
-
-| Nút | Hệ thống làm gì |
-|---|---|
-| **Đã xong** | Đánh dấu việc đã hoàn thành, ngừng nhắc, đổi hai nút thành nút "Hoàn tác" |
-| **Nhắc sau** | Không đóng việc, chỉ đẩy mốc nhắc kế tiếp ra xa hơn |
-| **Hoàn tác** | Mở lại việc vừa đóng nhầm, nhắc tiếp như cũ |
-
-### 3.2. Hai chi tiết nhỏ nhưng đáng nói
-
-**Sửa lại chính tin nhắn cũ, không gửi tin mới.**
-
-Bấm "Đã xong" thì tin nhắn nhắc biến thành dòng xác nhận ngay tại chỗ, kèm nút
-Hoàn tác. Cách này giữ cho khung chat sạch — nếu mỗi lần bấm lại đẻ thêm một tin
-mới thì chat sẽ đầy rác rất nhanh.
-
-**Hoàn tác chỉ trong 24 giờ.**
-
-Quá một ngày thì không mở lại được nữa, hệ thống báo "đã quá hạn hoàn tác". Lý
-do: nếu cho hoàn tác vô thời hạn thì một việc đóng từ ba tháng trước có thể bất
-ngờ sống dậy và nhắc lại, gây rối hơn là giúp.
-
-**Thứ tự bắt buộc:** ghi vào cơ sở dữ liệu trước, sửa tin nhắn sau. Làm ngược
-lại thì lúc ghi lỗi, người dùng đã nhìn thấy chữ "Đã xong" trong khi thật ra
-chưa xong gì cả.
-
----
-
-## 4. Luồng C — bộ não AI, phần chính của đề tài
-
-### 4.1. Trước hết: "agent" và "graph" là gì
+### 3.1. Trước hết: "agent" và "graph" là gì
 
 Hai từ này sẽ dùng nhiều, nên định nghĩa bằng lời thường:
 
@@ -346,7 +336,7 @@ Vì sao phải vẽ thành sơ đồ mà không viết một mạch từ trên x
 **vòng lặp** và có **chỗ dừng chờ người**. Viết tuần tự thì hai thứ đó rất rối;
 vẽ sơ đồ thì nhìn phát hiểu.
 
-### 4.2. Sơ đồ hai nhánh
+### 3.2. Sơ đồ hai nhánh
 
 ```mermaid
 flowchart TB
@@ -362,27 +352,38 @@ flowchart TB
     S --> X
 
     HOI -- "không → là câu hỏi" --> M["AI suy nghĩ"]
-    M -- "cần dữ liệu" --> TL["chạy công cụ tra cứu"]
+    M -- "cần dữ liệu" --> TL["chạy công cụ"]
     TL --> M
     M -- "đủ rồi" --> ANS["trả lời bạn"]
-    ANS --> X
+    ANS -- "không có đề xuất" --> X
+    ANS -- "có đề xuất cập nhật" --> W2["chờ bạn duyệt<br/>(dừng ở đây)"]
+    W2 --> D2["đọc ý bạn"]
+    D2 -- "duyệt" --> AP["ghi thay đổi<br/>vào cơ sở dữ liệu"]
+    D2 -- "không duyệt" --> X
+    AP --> X
 
     style E fill:#ffe8cc,stroke:#e8590c
     style D fill:#ffe8cc,stroke:#e8590c
     style M fill:#ffe8cc,stroke:#e8590c
+    style D2 fill:#ffe8cc,stroke:#e8590c
     style W fill:#fff3bf,stroke:#f08c00,stroke-width:2px
+    style W2 fill:#fff3bf,stroke:#f08c00,stroke-width:2px
     style HOI fill:#d3f9d8,stroke:#2f9e44
 ```
 
 Ô màu cam là chỗ có gọi AI, ô vàng là chỗ dừng chờ người, ô xanh là chỗ phân
 loại — và nó **không dùng AI**.
 
+**Hai nhánh có cùng một hình dạng ở đoạn cuối**, và đó là chủ ý: cả hai đều kết
+thúc bằng *đề xuất → chờ người duyệt → mới ghi*. AI không bao giờ tự tay ghi vào
+cơ sở dữ liệu, dù là lưu việc mới hay đóng một việc cũ.
+
 Việc phân loại "báo cáo hay câu hỏi" **không dùng AI**. Chỉ cần tìm xem trong
 tin có chữ `"Tiếp theo:"` hay `"Hiện trạng:"` không. Hai chữ này là dấu hiệu
 riêng của mẫu báo cáo, chính xác gần như tuyệt đối, mà tốn 0 đồng và 0 mili
 giây. Không phải chỗ nào cũng cần AI.
 
-### 4.3. Nhánh báo cáo — bốn bước
+### 3.3. Nhánh báo cáo — bốn bước
 
 Đây là phần đáng nói nhất, nên trình bày kỹ.
 
@@ -457,7 +458,7 @@ coi đó là một việc hoàn toàn mới → trong cơ sở dữ liệu có h
 việc, và dòng cũ vẫn nhắc theo hạn đã lỗi thời. Cắt hạn ra thì gửi lại bao nhiêu
 lần cũng chỉ cập nhật đúng một dòng.
 
-### 4.4. Nhánh hỏi đáp — và các công cụ
+### 3.4. Nhánh hỏi đáp — và các công cụ
 
 Nhánh này để bạn hỏi lại những gì đã lưu, bằng tiếng Việt tự nhiên:
 
@@ -468,21 +469,34 @@ Nhánh này để bạn hỏi lại những gì đã lưu, bằng tiếng Việt
 **Vấn đề:** AI ngôn ngữ không biết gì về cơ sở dữ liệu của tôi. Nó chỉ giỏi chữ
 nghĩa, không có sẵn dữ liệu.
 
-**Cách giải:** cho nó **công cụ** (*tool*). Hiểu đơn giản: tôi viết sẵn vài hàm
-tra cứu, rồi mô tả cho AI biết *"anh có hai cái nút này, cần thì cứ bấm"*. AI
-không tự chạy được — nó chỉ nói ra *"tôi muốn dùng công cụ số 1 với điều kiện
-ngày 20/7"*, còn chương trình của tôi mới thật sự chạy hàm đó rồi đưa kết quả
-lại cho AI đọc.
+**Cách giải:** cho nó **công cụ** (*tool*). Hiểu đơn giản: tôi viết sẵn vài hàm,
+rồi mô tả cho AI biết *"anh có mấy cái nút này, cần thì cứ bấm"*. AI không tự
+chạy được — nó chỉ nói ra *"tôi muốn dùng công cụ số 1 với điều kiện ngày 20/7"*,
+còn chương trình của tôi mới thật sự chạy hàm đó rồi đưa kết quả lại cho AI đọc.
 
-**Hai công cụ hiện có:**
+**Ba công cụ hiện có:**
 
 | Công cụ | Dùng để | Lọc được theo |
 |---|---|---|
-| `query_tasks` | Tra danh sách đầu việc | nhóm dự án, trạng thái (chưa xong / đã xong / hoãn), mức ưu tiên, khoảng hạn từ ngày → đến ngày |
+| `query_tasks` | Tra danh sách đầu việc | nhóm dự án, trạng thái (chưa xong / đã xong / đã hủy), mức ưu tiên, khoảng hạn từ ngày → đến ngày |
 | `search_reports` | Đọc lại nguyên văn báo cáo cũ | khoảng thời gian nhận, nhóm dự án |
+| `propose_task_update` | **Đề xuất** đóng việc / hủy việc / đổi hạn | mã việc `TB-002`, hoặc một phần nội dung |
 
-Cả hai đều **chỉ đọc**, không có công cụ nào được phép xoá hay sửa. Đây là chủ ý:
-AI không bao giờ được cầm quyền ghi.
+Hai công cụ đầu **chỉ đọc**. Công cụ thứ ba nghe như được ghi, nhưng không: nó
+tra ra đúng dòng việc rồi trả về một *đề xuất*, và dừng ở đó. Việc ghi nằm ở ô
+`ghi thay đổi` trong sơ đồ — chỉ chạy sau khi bạn gật.
+
+Ba khả năng khi tra:
+
+| Tìm thấy | Công cụ trả về | AI làm gì |
+|---|---|---|
+| không việc nào | `not_found` | báo không tìm thấy, hỏi lại mã |
+| nhiều việc khớp | `ambiguous` + danh sách | đọc mã từng ứng viên, hỏi bạn chọn |
+| đúng một việc | `proposed` | nói sẽ làm gì, rồi hệ thống hỏi duyệt |
+
+**Đây là chỗ mã việc phát huy tác dụng.** Bạn nhắn "việc viết tài liệu xong rồi"
+mà có ba việc chứa chữ đó thì AI **không được đoán** — nó liệt kê ba mã ra và
+hỏi lại. Còn nhắn thẳng "TB-002 xong rồi" thì ra đúng một dòng, không phải hỏi.
 
 **Một mẹo nhỏ đáng khoe:** khi trả kết quả, chương trình tính sẵn "thứ mấy" và
 "còn mấy ngày" rồi đưa kèm, thay vì để AI tự suy từ ngày tháng. Vì AI tính lịch
@@ -495,7 +509,7 @@ Vòng chạy của nhánh này:
 flowchart LR
     Q(["câu hỏi<br/>của bạn"]) --> M["AI suy nghĩ"]
     M --> C{"có cần<br/>tra cứu?"}
-    C -- "có" --> T["chạy công cụ<br/>query_tasks / search_reports"]
+    C -- "có" --> T["chạy công cụ<br/>tra cứu / đề xuất cập nhật"]
     T -- "đưa kết quả về" --> M
     C -- "không" --> A(["trả lời bạn"])
 
@@ -506,7 +520,7 @@ flowchart LR
 Vòng này bị chặn tối đa **3 lượt** để phòng trường hợp AI tra đi tra lại không
 dứt.
 
-### 4.5. Chỗ dừng chờ người — giải thích cho kỹ
+### 3.5. Chỗ dừng chờ người — giải thích cho kỹ
 
 Nếu ban giám khảo hỏi sâu, đây là chỗ nên nói:
 
@@ -528,11 +542,27 @@ việc gửi tin nhắn hay gọi AI vào trong. Đặt nhầm thì cứ mỗi c
 lại gửi lặp lại bảng cũ và tốn thêm một lần gọi AI. Đó chính là lý do bước "chờ
 duyệt" và bước "đọc ý bạn" được tách thành **hai bước riêng** thay vì gộp một.
 
+Có **hai** chỗ dừng như vậy — một cho bảng đầu việc, một cho đề xuất cập nhật —
+nên khi tin nhắn của bạn tới, hệ thống phải hỏi sổ tiến độ *"đang treo ở chỗ nào
+không?"* và liệt kê đủ cả hai. Sót một cái là câu "ok" của bạn bị đem đi phân
+loại như một câu hỏi mới, còn đề xuất thì treo mãi không ai duyệt.
+
+Hai chỗ dừng đó cố ý xử lý câu trả lời khó hiểu theo **hai kiểu khác nhau**:
+
+| | Trả lời chưa rõ thì |
+|---|---|
+| Bảng đầu việc | hỏi lại, bảng vẫn treo chờ |
+| Đề xuất cập nhật | **bỏ luôn đề xuất** |
+
+Lý do: trích lại một bảng đầu việc tốn một lần gọi AI, còn dựng lại một đề xuất
+chỉ tốn đúng một câu bạn nhắn. Treo ở chỗ dừng thì nuốt mọi tin nhắn sau đó của
+bạn, nên với thứ rẻ tiền như đề xuất thì thà bỏ đi cho nhẹ.
+
 ---
 
-## 5. Tổng kết chức năng
+## 4. Tổng kết chức năng
 
-### 5.1. Bảng chức năng
+### 4.1. Bảng chức năng
 
 | Nhóm | Chức năng |
 |---|---|
@@ -545,10 +575,18 @@ duyệt" và bước "đọc ý bạn" được tách thành **hai bước riên
 | | Trả lời bằng lời tự do: duyệt / sửa / bỏ |
 | | Yêu cầu sửa thì trích lại theo đúng ý |
 | | Trả lời chưa rõ thì hỏi lại, không tự quyết |
-| **Nhắc việc** | Nhắc tự động theo nhịp tuỳ mức ưu tiên |
+| | Hiểu hạn nói kiểu "2 ngày nữa", "1 tháng nữa" thành ngày cụ thể |
+| **Nhắc việc** | Gộp cả lô việc tới hạn vào **một** tin duy nhất |
+| | Chia ba rổ: quá hạn → ưu tiên → bình thường |
 | | Tự nâng mức khi sắp tới hạn hoặc đã quá hạn |
 | | Chỉ nhắc trong giờ làm việc |
-| | Nút Đã xong / Nhắc sau ngay trên tin nhắn |
+| | Mỗi việc có mã ngắn `TB-002` để gõ lại trong tin nhắn |
+| **Cập nhật việc** | Nhắn "TB-002 xong rồi" → đánh dấu hoàn thành |
+| | Nhắn "hủy việc quay demo" → bỏ việc, không xoá khỏi dữ liệu |
+| | Nhắn "dời TB-003 sang 2 tuần nữa" → đổi hạn, lịch nhắc chạy theo hạn mới |
+| | Nói mơ hồ thì liệt kê ứng viên hỏi lại, không đoán |
+| | Mọi thay đổi đều hỏi duyệt trước, và xác nhận lại sau khi ghi |
+| | Việc đã xong hoặc đã hủy thì thôi không nhắc nữa |
 | | Hoàn tác trong 24 giờ |
 | **Hỏi đáp** | Hỏi bằng tiếng Việt về việc đã lưu |
 | | Tra theo nhóm, trạng thái, mức ưu tiên, khoảng hạn |
@@ -561,11 +599,11 @@ duyệt" và bước "đọc ý bạn" được tách thành **hai bước riên
 | | Xem lại toàn bộ quá trình AI suy nghĩ trên Langfuse |
 | | Sửa hướng dẫn cho AI trên giao diện web, không cần sửa code |
 
-### 5.2. Công nghệ dùng — và vì sao chọn
+### 4.2. Công nghệ dùng — và vì sao chọn
 
 | Thành phần | Chọn cái gì | Vì sao |
 |---|---|---|
-| Giao diện người dùng | **Telegram** | Không phải làm app, ai cũng có sẵn, lại có sẵn nút bấm và thông báo đẩy |
+| Giao diện người dùng | **Telegram** | Không phải làm app, ai cũng có sẵn, lại có sẵn thông báo đẩy |
 | Máy chủ web | **FastAPI** | Nhẹ, viết kiểu bất đồng bộ nên chờ AI trả lời không làm nghẽn người khác |
 | Luồng cho AI | **LangGraph** | Là thư viện hiếm hoi làm được chỗ "dừng chờ người duyệt" |
 | Mô hình AI | **Google Gemini** | Đọc tiếng Việt tốt, có bậc miễn phí |
@@ -573,19 +611,21 @@ duyệt" và bước "đọc ý bạn" được tách thành **hai bước riên
 | Hẹn giờ | **APScheduler** | Đủ dùng cho một tác vụ mỗi phút, không cần dựng thêm dịch vụ |
 | Theo dõi AI | **Langfuse** | Xem lại từng câu đã hỏi AI, AI trả gì, tốn bao nhiêu |
 
-### 5.3. Ba điều tâm đắc — dùng để chốt bài
+### 4.3. Ba điều tâm đắc — dùng để chốt bài
 
 **Một là: dùng AI đúng chỗ.**
 
-Hệ thống có ba lần gọi AI và chỉ ba lần: trích đầu việc, đọc ý người duyệt, trả
-lời câu hỏi. Mọi thứ còn lại — phân loại tin nhắn, tính nhịp nhắc, tính thứ
-trong tuần, xử lý nút bấm — đều là code thường. Chỗ nào có quy tắc rõ thì viết
-quy tắc, đừng hỏi AI.
+Hệ thống chỉ gọi AI ở ba loại việc: trích đầu việc, đọc ý người duyệt, trả lời
+câu hỏi. Mọi thứ còn lại — phân loại tin nhắn, tính nhịp nhắc, tính thứ trong
+tuần, chia rổ tin nhắc, sinh mã việc — đều là code thường. Chỗ nào có quy tắc rõ
+thì viết quy tắc, đừng hỏi AI.
 
 **Hai là: không cho AI quyền ghi.**
 
-AI chỉ được đề xuất, người duyệt mới được lưu. Hai công cụ tra cứu đều chỉ đọc.
-Nhờ vậy AI có sai thì hậu quả tệ nhất cũng chỉ là bạn phải gõ "sửa lại giúp".
+AI chỉ được đề xuất, người duyệt mới được lưu — kể cả khi đóng một việc cũ chứ
+không riêng lúc lưu việc mới. Cả ba công cụ đều không được ghi: hai cái đầu chỉ
+đọc, cái thứ ba dừng ở mức đề xuất. Nhờ vậy AI có sai thì hậu quả tệ nhất cũng
+chỉ là bạn phải gõ "thôi".
 
 **Ba là: thiết kế cho việc chờ lâu.**
 
@@ -595,7 +635,7 @@ chuyện đó đều không làm hỏng gì.
 
 ---
 
-## 6. Phòng khi bị hỏi
+## 5. Phòng khi bị hỏi
 
 **"Lỡ AI trích sai thì sao?"**
 > Không sao, vì nó không được tự lưu. Bảng luôn hiện ra chờ duyệt, sai thì tôi
@@ -606,9 +646,21 @@ chuyện đó đều không làm hỏng gì.
 > không phải 19" thì không nút nào làm được. Tôi chọn linh hoạt và chấp nhận
 > tốn thêm.
 
+**"Trước có nút Đã xong / Nhắc sau dưới tin nhắc, sao lại bỏ?"**
+> Vì tin nhắc giờ gộp cả lô việc vào một tin. Một tin thì gắn được bộ nút nào
+> cho việc nào? Bỏ nút đi, thay bằng mã việc in ngay trong tin — bạn gõ
+> "TB-002 xong rồi" là được, mà lại nói được cả những thứ nút không diễn đạt
+> nổi như "dời sang 2 tuần nữa".
+
 **"Sao không cho AI viết thẳng câu lệnh truy vấn cơ sở dữ liệu?"**
-> Vì như thế là trao quyền ghi và xoá cho AI. Tôi cố định sẵn hai hàm tra cứu
-> chỉ đọc, AI chỉ được chọn điều kiện lọc chứ không được tự viết câu lệnh.
+> Vì như thế là trao quyền ghi và xoá cho AI. Tôi cố định sẵn mấy hàm, AI chỉ
+> được chọn điều kiện lọc chứ không được tự viết câu lệnh — và không hàm nào
+> trong tay AI được phép ghi.
+
+**"Hủy việc thì sao không xoá luôn khỏi cơ sở dữ liệu?"**
+> Hai lý do. Một, hủy nhầm thì còn khôi phục được. Hai, nếu xoá hẳn thì lần sau
+> gửi lại đúng bản báo cáo cũ, việc đã hủy sẽ sống dậy — vì hệ thống không còn
+> dấu vết nào để biết bạn từng bỏ nó.
 
 **"Webhook là gì, có phải một dịch vụ trung gian không?"**
 > Không. Nó chỉ là một địa chỉ URL nằm ngay trên máy chủ của tôi, dựng sẵn để
@@ -641,18 +693,24 @@ chuyện đó đều không làm hỏng gì.
 
 ---
 
-## 7. Kịch bản demo
+## 6. Kịch bản demo
 
-Trình bày theo đúng thứ tự này thì chạm được cả ba luồng:
+Trình bày theo đúng thứ tự này thì chạm được cả hai luồng và cả hai chỗ dừng
+chờ duyệt:
 
 1. **Dán một bản báo cáo** → bot hiện bảng đầu việc *(luồng C, nhánh báo cáo)*
 2. **Nhắn "bỏ việc số 2 đi"** → bot trích lại, bảng mới thiếu việc 2 *(vòng sửa)*
 3. **Nhắn "ok"** → bot báo đã lưu *(duyệt và ghi)*
-4. **Chờ tới mốc nhắc** → tin nhắn nhắc kèm hai nút hiện ra *(luồng A)*
-5. **Bấm "Đã xong"** → tin nhắn đổi thành xác nhận, hiện nút Hoàn tác *(luồng B)*
-6. **Hỏi "tuần này tôi còn việc gì?"** → bot tra cơ sở dữ liệu rồi trả lời
+4. **Chờ tới mốc nhắc** → **một** tin gộp hiện ra, chia ba rổ, mỗi dòng có mã
+   việc *(luồng A)*
+5. **Nhắn "TB-002 xong rồi"** → bot đề xuất, nhắn "ok" → bot xác nhận đã ghi
+   *(luồng C, chỗ dừng thứ hai)*
+6. **Nhắn "dời TB-003 sang 2 tuần nữa"** → bot nhắn lại đúng ngày cụ thể kèm thứ
+   để soát trước khi gật *(hạn tương đối)*
+7. **Chờ lượt nhắc kế** → hai việc vừa xử lý **không** còn xuất hiện
+8. **Hỏi "tuần này tôi còn việc gì?"** → bot tra cơ sở dữ liệu rồi trả lời
    *(luồng C, nhánh hỏi đáp)*
-7. **Mở Langfuse** → chỉ ra từng bước AI vừa chạy, câu hỏi và câu trả lời đầy đủ
+9. **Mở Langfuse** → chỉ ra từng bước AI vừa chạy, câu hỏi và câu trả lời đầy đủ
 
-Mẹo khi demo: đặt tạm nhịp nhắc việc gấp xuống **1 phút** để bước 4 không phải
-chờ lâu trước mặt mọi người.
+Mẹo khi demo: đặt tạm `PENDING_INTERVAL_MIN` xuống **1 phút** để bước 4 và bước
+7 không phải chờ lâu trước mặt mọi người.

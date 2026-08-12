@@ -29,6 +29,13 @@ _PROMPT_DIR = Path(__file__).parent
 # Tên trên Langfuse: reminder-agent/<name>, gom prompt của dự án vào một chỗ
 _LANGFUSE_NAMESPACE = "reminder-agent"
 
+# Prompt chưa từng được đẩy lên Langfuse. Hỏi Langfuse về một tên không tồn tại
+# tốn 1-3 GIÂY mỗi lần: nó trả fallback chứ không raise, nhưng lượt sau lại đi
+# hỏi lại y hệt (nó xoá tên hỏng khỏi cache thay vì nhớ là hỏng). Hai prompt mỗi
+# lượt chat là mất vài giây trước khi kịp gọi LLM. Nhớ tên hỏng ở đây để chỉ trả
+# giá đúng một lần cho mỗi tiến trình.
+_missing_on_langfuse: set[str] = set()
+
 
 @lru_cache(maxsize=None)
 def _read_local(name: str) -> str:
@@ -57,7 +64,7 @@ def load_prompt(name: str, **variables: str) -> str:
     """
     local = _read_local(name)
 
-    if not _langfuse_enabled():
+    if not _langfuse_enabled() or name in _missing_on_langfuse:
         return _compile_local(local, variables)
 
     try:
@@ -68,8 +75,33 @@ def load_prompt(name: str, **variables: str) -> str:
             label="production",
             fallback=local,
         )
-        return prompt.compile(**variables)
     except ImportError as exc:
         # Có key nhưng chưa cài gói -> đừng làm sập agent vì chuyện quan sát
         log.warning("Dùng prompt .md, không gọi được Langfuse: %s", exc)
         return _compile_local(local, variables)
+
+    # is_fallback = Langfuse không trả được prompt này (chưa đẩy lên, hoặc mạng
+    # hỏng). Ghi tên lại để khỏi trả giá chờ mạng ở mọi lượt chat sau.
+    if getattr(prompt, "is_fallback", False):
+        _missing_on_langfuse.add(name)
+        log.warning(
+            "Prompt '%s' không có trên Langfuse, dùng bản .md và thôi không hỏi lại. "
+            "Đẩy nó lên rồi khởi động lại nếu muốn sửa prompt trên UI.",
+            name,
+        )
+        return _compile_local(local, variables)
+
+    return prompt.compile(**variables)
+
+
+def warm_up() -> None:
+    """Nạp trước mọi prompt lúc khởi động.
+
+    Lượt hỏi Langfuse đầu tiên của mỗi prompt tốn vài giây dù thành công hay
+    không. Trả giá đó ở đây, lúc chưa ai chờ, thay vì để rơi vào tin nhắn đầu
+    tiên của người dùng.
+    """
+    if not _langfuse_enabled():
+        return
+    for path in sorted(_PROMPT_DIR.glob("*.md")):
+        load_prompt(path.stem)

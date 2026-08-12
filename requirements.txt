@@ -13,6 +13,7 @@ langchain-google-genai==2.0.7
 python-dateutil==2.9.0.post0
 tenacity==9.0.0
 pyyaml==6.0.2
+pytest==8.3.4
 # Tuỳ chọn: sửa prompt trên UI + trace agent. Không cài thì code tự dùng prompt .md.
 # Muốn có TRACE thì phải cài kèm gói `langchain`: langfuse.langchain.CallbackHandler
 # import từ đó, langchain-core không đủ. Chốt <0.4 — bản 1.x mới là bản xung đột

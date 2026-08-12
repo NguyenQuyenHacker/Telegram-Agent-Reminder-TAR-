@@ -8,7 +8,13 @@ Graph có hai nhánh:
   báo cáo:  extract_tasks -> ask_confirm -> read_decision -(duyệt)-> save_to_db
                  ^                ^ interrupt      |
                  +---(sửa)--------+---(chưa rõ)----+
-  hỏi đáp:  call_model <-> call_tools -> answer
+  hỏi đáp:  call_model <-> call_tools -> answer -(có đề xuất)-> ask_update_confirm
+                                                                     ^ interrupt
+                                                                     |
+                              apply_updates <-(duyệt)- read_update_decision
+
+Hai nhánh có cùng một hình dạng ở đoạn cuối vì cùng một nguyên tắc: LLM chỉ đề
+xuất, người dùng gật thì code mới ghi DB.
 """
 
 import asyncio
@@ -31,20 +37,31 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.core.datetime_utils import now_local, weekday_vi
-from app.core.priority import clamp_to_window, interval_for
+from app.core.priority import clamp_to_window, compute_next_remind_at
 from app.core.task_text import normalize_content
 from app.telegram.messages import (
     abandoned_text,
+    cancel_confirmation_text,
+    done_confirmation_text,
+    due_updated_text,
     extraction_summary_text,
     missing_due_date_prompt,
     need_reason_text,
     no_answer_text,
     saved_text,
+    update_confirm_text,
+    update_failed_text,
 )
 from app.telegram.sender import send_message
-from persistence.models.task import Priority, TaskStatus
+from persistence.models.task import Priority
 from persistence.proc.reports import insert_report
-from persistence.proc.tasks import upsert_task
+from persistence.proc.tasks import (
+    cancel_task,
+    get_task,
+    mark_done,
+    set_due_date,
+    upsert_task,
+)
 from reminder_agent.config.settings import create_google_genai, load_config
 from reminder_agent.prompts.loader import load_prompt
 from reminder_agent.utils.intent import parse_free_text_decision
@@ -106,7 +123,12 @@ class ReminderAgent:
         report_text = state.get("raw_report_text") or ""
         edit_request = state.get("edit_request")
 
-        system_prompt = load_prompt("extract_system", TODAY=now_local().date().isoformat())
+        today = now_local().date()
+        system_prompt = (
+            load_prompt("extract_system", TODAY=today.isoformat())
+            + "\n\n"
+            + load_prompt("_date_rules", TODAY=today.isoformat())
+        )
         if edit_request:
             system_prompt += "\n\n" + load_prompt(
                 "extract_retry", EDIT_REQUEST=edit_request
@@ -195,24 +217,26 @@ class ReminderAgent:
             return {}
 
         first_remind_at = clamp_to_window(now_local())
+        awaiting_due_task_ids = []
         for task in tasks:
-            priority = Priority(task["priority"])
             saved_task = await asyncio.to_thread(
                 upsert_task,
                 self.compute_task_id(task["group"], task["content"]),
                 task["group"],
                 task["content"],
                 date.fromisoformat(task["due_date"]) if task.get("due_date") else None,
-                priority,
-                interval_for(priority, TaskStatus.pending),
+                Priority(task["priority"]),
                 first_remind_at,
             )
             if saved_task.due_date is None:
+                # Nhớ lại đã hỏi hạn cho việc nào: câu trả lời rơi vào nhánh hỏi
+                # đáp, ở đó LLM không có cách nào tự biết "2 ngày nữa" nói về việc gì.
+                awaiting_due_task_ids.append(saved_task.task_id)
                 await send_message(state["chat_id"], missing_due_date_prompt(saved_task))
 
         log.info("SAVE: đã lưu %d đầu việc", len(tasks))
         await send_message(state["chat_id"], saved_text(len(tasks)))
-        return {}
+        return {"awaiting_due_task_ids": awaiting_due_task_ids}
 
     # ------------------------------------------------------------------
     # Nhánh hỏi đáp
@@ -234,6 +258,12 @@ class ReminderAgent:
             include_system=False,
         )
 
+    @staticmethod
+    def _still_missing_due(task_ids: list[str]) -> list:
+        """Việc nào trong danh sách chờ mà vẫn chưa có hạn. Chạy trong to_thread."""
+        tasks = (get_task(task_id) for task_id in task_ids)
+        return [task for task in tasks if task is not None and task.due_date is None]
+
     async def call_model(self, state: GraphState) -> dict:
         recent_messages = self._recent_history(state)
         # Nhánh này cũng cần mốc ngày như nhánh trích: không có thì "20/7" của
@@ -243,7 +273,26 @@ class ReminderAgent:
             "agent_system",
             TODAY=today.isoformat(),
             TODAY_WEEKDAY=weekday_vi(today),
+        ) + "\n\n" + load_prompt("_date_rules", TODAY=today.isoformat())
+
+        # Vừa hỏi hạn cho vài việc thì nói cho LLM biết là hỏi việc nào: "3 ngày
+        # nữa" một mình không đủ để nó đoán ra đầu việc nào đang thiếu hạn.
+        awaiting_ids = state.get("awaiting_due_task_ids") or []
+        still_missing = (
+            await asyncio.to_thread(self._still_missing_due, awaiting_ids)
+            if awaiting_ids
+            else []
         )
+        if still_missing:
+            pending_list = ", ".join(
+                f"{task.code} {normalize_content(task.content)}" for task in still_missing
+            )
+            system_prompt += (
+                f"\n\nYou have just asked the user for a deadline for: {pending_list}. "
+                "Their next message is most likely that deadline — call "
+                "propose_task_update(action='reschedule') for the matching task."
+            )
+
         response = await self.qa_assistant.ainvoke(
             {
                 "system": [SystemMessage(content=system_prompt)],
@@ -263,11 +312,17 @@ class ReminderAgent:
         if deletions:
             log.info("HISTORY: bỏ %d message cũ khỏi state", len(deletions))
 
-        return {"messages": [*deletions, response]}
+        # Danh sách chờ hạn tự cạn: việc đã có hạn thì rơi ra khỏi still_missing
+        # và không bao giờ quay lại. Không cần ai đi dọn.
+        return {
+            "messages": [*deletions, response],
+            "awaiting_due_task_ids": [task.task_id for task in still_missing],
+        }
 
     async def call_tools(self, state: GraphState) -> dict:
         last_message = state["messages"][-1]
         tool_messages = []
+        proposals = []
         for tool_call in last_message.tool_calls:
             tool = self._tools_by_name[tool_call["name"]]
             try:
@@ -275,6 +330,11 @@ class ReminderAgent:
             except Exception as exc:
                 log.exception("Tool %s lỗi", tool_call["name"])
                 result = f"Lỗi khi tra cứu: {exc}"
+            # Đề xuất được gom ở đây, từ giá trị trả về gốc của tool. Không đọc
+            # lại từ câu trả lời của LLM: LLM có thể kể sai mã việc, còn đây là
+            # đúng dòng mà propose_task_update đã tra ra.
+            if isinstance(result, dict) and result.get("status") == "proposed":
+                proposals.append(result)
             tool_messages.append(
                 ToolMessage(
                     content=str(result),
@@ -285,6 +345,7 @@ class ReminderAgent:
         return {
             "messages": tool_messages,
             "tool_call_rounds": state.get("tool_call_rounds", 0) + 1,
+            "pending_updates": [*(state.get("pending_updates") or []), *proposals],
         }
 
     def route_agent(self, state: GraphState) -> str:
@@ -300,13 +361,86 @@ class ReminderAgent:
 
         Hết max_tool_rounds mà LLM vẫn chỉ trả tool_calls thì content rỗng —
         vẫn phải nói gì đó, im lặng trông như bot chết.
+
+        Bảng đề xuất gửi ở ĐÂY chứ không ở ask_update_confirm, đúng lý do đã ghi
+        ở ask_confirm: node có interrupt() chạy lại từ đầu mỗi lần resume.
         """
+        pending_updates = state.get("pending_updates") or []
+        # Có đề xuất thì BỎ luôn lời của LLM: nó chỉ kể lại y hệt những gì bảng
+        # đề xuất sắp nói, thành hai tin nhắn trùng nội dung. Bảng mới là bản
+        # chuẩn — nó dựng từ giá trị gốc của tool, không qua tay LLM kể lại.
+        if pending_updates:
+            await send_message(state["chat_id"], update_confirm_text(pending_updates))
+            return {}
+
         last_message = state["messages"][-1]
         # Kiểm content trước rồi mới str(): content rỗng của Gemini có thể là []
         # chứ không phải "", str([]) ra "[]" và người dùng nhận đúng hai ký tự đó.
         text = str(last_message.content) if last_message.content else no_answer_text()
         await send_message(state["chat_id"], text)
         return {}
+
+    def route_after_answer(self, state: GraphState) -> str:
+        return "ask_update_confirm" if state.get("pending_updates") else END
+
+    def ask_update_confirm(self, state: GraphState) -> dict:
+        """Chốt duyệt cho đề xuất cập nhật. Rỗng hoàn toàn, xem ask_confirm."""
+        reply = interrupt(
+            {"awaiting": "update", "updates": state.get("pending_updates", [])}
+        )
+        return {"update_reply": reply}
+
+    async def read_update_decision(self, state: GraphState) -> dict:
+        """Đọc "ok" / "thôi" bằng chính LLM đã đọc câu duyệt bảng đầu việc.
+
+        Chưa rõ ý thì BỎ đề xuất chứ không hỏi lại vòng vòng như read_decision:
+        dựng lại một đề xuất chỉ tốn một câu người dùng nhắn, trong khi treo ở
+        interrupt là nuốt mọi tin nhắn sau đó của họ. Ý muốn sửa cũng vào nhánh
+        này — đề xuất chỉ có ok hoặc thôi.
+        """
+        decision = await parse_free_text_decision(state.get("update_reply") or "")
+        status = decision["status"] if decision["status"] == "approved" else "abandoned"
+        log.info("UPDATE CONFIRM status=%s chat_id=%s", status, state["chat_id"])
+
+        if status == "abandoned":
+            await send_message(state["chat_id"], abandoned_text())
+            return {"update_status": status, "pending_updates": []}
+        return {"update_status": status}
+
+    def route_after_update(self, state: GraphState) -> str:
+        return "apply_updates" if state.get("update_status") == "approved" else END
+
+    async def apply_updates(self, state: GraphState) -> dict:
+        """Chỗ DUY NHẤT trong nhánh hỏi đáp được ghi DB, và chỉ sau khi người dùng gật."""
+        for update in state.get("pending_updates") or []:
+            task_id = update["task_id"]
+            action = update["action"]
+            if action == "done":
+                task = await asyncio.to_thread(mark_done, task_id)
+                confirm = done_confirmation_text
+            elif action == "cancel":
+                task = await asyncio.to_thread(cancel_task, task_id)
+                confirm = cancel_confirmation_text
+            else:
+                new_due = (
+                    date.fromisoformat(update["new_due_date"])
+                    if update.get("new_due_date")
+                    else None
+                )
+                # Mốc nhắc dời theo luôn, nếu không thì lịch nhắc vẫn chạy theo hạn cũ
+                task = await asyncio.to_thread(
+                    set_due_date, task_id, new_due, compute_next_remind_at(now_local())
+                )
+                confirm = due_updated_text
+
+            log.info("APPLY action=%s task_id=%s ok=%s", action, task_id, task is not None)
+            # Nhắn xác nhận từng thay đổi một, để người dùng soát được cái nào trượt
+            await send_message(
+                state["chat_id"],
+                confirm(task) if task is not None else update_failed_text(),
+            )
+
+        return {"pending_updates": []}
 
     # ------------------------------------------------------------------
     # Dựng graph
@@ -356,6 +490,9 @@ class ReminderAgent:
         builder.add_node("agent", self.call_model)
         builder.add_node("tools", self.call_tools)
         builder.add_node("answer", self.answer)
+        builder.add_node("ask_update_confirm", self.ask_update_confirm)
+        builder.add_node("read_update_decision", self.read_update_decision)
+        builder.add_node("apply_updates", self.apply_updates)
 
         # Cả ba chỗ rẽ nhánh dùng chung một API, chỉ khác điểm xuất phát:
         # START / ask_confirm / agent. set_conditional_entry_point() làm đúng
@@ -382,6 +519,17 @@ class ReminderAgent:
             "agent", self.route_agent, {"tools": "tools", END: "answer"}
         )
         builder.add_edge("tools", "agent")
-        builder.add_edge("answer", END)
+        builder.add_conditional_edges(
+            "answer",
+            self.route_after_answer,
+            {"ask_update_confirm": "ask_update_confirm", END: END},
+        )
+        builder.add_edge("ask_update_confirm", "read_update_decision")
+        builder.add_conditional_edges(
+            "read_update_decision",
+            self.route_after_update,
+            {"apply_updates": "apply_updates", END: END},
+        )
+        builder.add_edge("apply_updates", END)
 
         return self._with_tracing(builder.compile(checkpointer=self.checkpointer))

@@ -1,0 +1,35 @@
+from datetime import date, datetime
+
+import pytest
+
+from app.core.datetime_utils import TZ
+from persistence.models.task import Priority, Task, TaskStatus
+
+
+@pytest.fixture
+def now():
+    """Mốc cố định trong khung giờ nhắc, để test không phụ thuộc lúc chạy."""
+    return datetime(2026, 7, 17, 9, 0, tzinfo=TZ)
+
+
+@pytest.fixture
+def make_task(now):
+    def _make(
+        code: str,
+        content: str = "Việc nào đó",
+        due_date: date | None = None,
+        priority: Priority = Priority.normal,
+        group: str = "Nhóm A",
+    ) -> Task:
+        return Task(
+            task_id=code.lower(),
+            code=code,
+            group=group,
+            content=content,
+            due_date=due_date,
+            priority=priority,
+            status=TaskStatus.pending,
+            next_remind_at=now,
+        )
+
+    return _make

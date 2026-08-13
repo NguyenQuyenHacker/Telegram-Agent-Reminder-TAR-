@@ -22,6 +22,8 @@ def make_task(now):
         due_date: date | None = None,
         priority: Priority = Priority.normal,
         group: str = "Nhóm A",
+        parent_task_id: str | None = None,
+        status: TaskStatus = TaskStatus.pending,
     ) -> Task:
         # Gắn sẵn dòng nhóm chứ không để None: task.group_name đọc qua nó, và
         # test dựng Task trong bộ nhớ nên không có session nào nạp hộ.
@@ -36,10 +38,11 @@ def make_task(now):
                 normalized_name=normalize_group(group),
                 prefix=derive_prefix(group),
             ),
+            parent_task_id=parent_task_id,
             content=content,
             due_date=due_date,
             priority=priority,
-            status=TaskStatus.pending,
+            status=status,
             next_remind_at=now,
         )
 

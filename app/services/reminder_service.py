@@ -9,6 +9,7 @@ from app.core.reminder_digest import group_by_bucket
 from app.telegram.messages import REMINDER_PARSE_MODE, digest_text
 from app.telegram.sender import send_message
 from persistence.models.task import Task
+from persistence.proc.subtasks import subtask_progress
 from persistence.proc.tasks import get_due_tasks, reschedule_task
 
 log = logging.getLogger(__name__)
@@ -63,10 +64,16 @@ async def run_job_a() -> None:
             await _defer_until_next_window(task, now)
         return
 
+    # Một truy vấn cho cả lô, không phải một truy vấn cho mỗi dòng. Việc chưa
+    # chia nhỏ thì không có khoá trong dict và tin nhắn không in dòng tiến độ.
+    progress = await asyncio.to_thread(
+        subtask_progress, [task.task_id for task in due_tasks]
+    )
+
     try:
         await send_message(
             settings.telegram_chat_id,
-            digest_text(group_by_bucket(due_tasks, now), now),
+            digest_text(group_by_bucket(due_tasks, now), now, progress),
             parse_mode=REMINDER_PARSE_MODE,
         )
     except Exception:

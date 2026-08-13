@@ -33,4 +33,22 @@ MANDATORY RULES:
    "(hạn 5/1)" -> "2031-01-05".
    NEVER invent a due date. If a line states no deadline, due_date = null.
 
+FREE-FORM INPUT (no "Tiếp theo:" heading anywhere):
+
+The text may also be a voice message transcript, the text read out of a photo,
+or a plain chat message — none of which follow the report layout above. When
+there is no "Tiếp theo:" block at all, rule 1 does not apply. Instead:
+
+6. Extract every piece of work the user commits to or asks to be reminded of.
+   Ignore anything already finished, and ignore small talk.
+
+7. Rules 3, 4 and 5 still hold — priority, verbatim Vietnamese content, and the
+   year-picking rule for due dates.
+
+8. group: use the project name if the user names one. If they do not, use
+   exactly "Việc chung". Never invent a project name.
+
+9. Nothing in the text is an action item -> return an empty list. Do not
+   manufacture one to have something to return.
+
 Return the list of action items following exactly the required schema.

@@ -52,11 +52,20 @@ def _ilike_pattern(text: str) -> str:
 
 
 def get_due_tasks(now: datetime) -> list[Task]:
-    """Chỉ việc đang chờ: xong hoặc đã hủy thì không nhắc nữa."""
+    """Chỉ việc đang chờ: xong hoặc đã hủy thì không nhắc nữa.
+
+    Việc CON không vào lượt quét. Chúng là các đầu mục bên trong một việc lớn,
+    nhắc riêng từng cái là người dùng nhận lại đúng cái danh sách họ vừa tự chia
+    ra. Tiến độ của chúng đi kèm dòng việc lớn trong tin nhắc gộp.
+    """
     with get_session() as session:
         stmt = (
             select(Task)
-            .where(Task.status == TaskStatus.pending, Task.next_remind_at <= now)
+            .where(
+                Task.status == TaskStatus.pending,
+                Task.next_remind_at <= now,
+                col(Task.parent_task_id).is_(None),
+            )
             .order_by(Task.next_remind_at)
         )
         return list(session.exec(stmt).all())
@@ -119,13 +128,26 @@ def upsert_task(
         return task
 
 
+def _stamp_closed(task: Task, status: TaskStatus, now: datetime) -> None:
+    """Đặt trạng thái cuối cho một dòng, kèm đúng một mốc thời gian.
+
+    Xoá mốc của trạng thái cuối KIA luôn: ghi mỗi status là để lại một dòng tự
+    mâu thuẫn — "đã hủy" nhưng vẫn còn done_at của lần báo xong trước đó, và
+    hoàn tác sau này nhìn vào mốc cũ đó mà quyết định.
+    """
+    task.status = status
+    for closed_status, field in _CLOSED_AT_FIELD.items():
+        setattr(task, field, now if closed_status == status else None)
+    task.updated_at = now
+
+
 def _close_task(task_id: str, status: TaskStatus) -> Task | None:
     """Chuyển một việc ĐANG CHỜ sang trạng thái cuối (xong / hủy).
 
-    Ghi cả cụm trong một lượt: status, mốc của trạng thái mới, và xoá mốc của
-    trạng thái cuối kia. Ghi mỗi status là để lại một dòng tự mâu thuẫn — "đã
-    hủy" nhưng vẫn còn done_at của lần báo xong trước đó, và hoàn tác sau này
-    nhìn vào mốc cũ đó mà quyết định.
+    Đóng một việc LỚN thì đóng luôn những việc con còn đang chờ của nó, trong
+    cùng một transaction. Để lại con "đang chờ" dưới một dòng đã chốt là tiến độ
+    nói một đằng ("2/4") còn trạng thái nói một nẻo ("đã xong"), và những dòng
+    con đó thì không lượt quét nào chạm tới nữa nên nằm lại vĩnh viễn.
 
     Trả None khi dòng đã ở một trạng thái cuối KHÁC: đề xuất được ghi sau khi
     người dùng đọc bảng xác nhận, giữa hai mốc ấy dòng có thể đã bị lượt khác
@@ -145,11 +167,20 @@ def _close_task(task_id: str, status: TaskStatus) -> Task | None:
             return None
 
         now = _utcnow()
-        task.status = status
-        for closed_status, field in _CLOSED_AT_FIELD.items():
-            setattr(task, field, now if closed_status == status else None)
-        task.updated_at = now
+        _stamp_closed(task, status, now)
         session.add(task)
+
+        if task.parent_task_id is None:
+            open_children = session.exec(
+                select(Task).where(
+                    Task.parent_task_id == task_id,
+                    Task.status == TaskStatus.pending,
+                )
+            ).all()
+            for child in open_children:
+                _stamp_closed(child, status, now)
+                session.add(child)
+
         session.commit()
         session.refresh(task)
         return task
@@ -256,13 +287,22 @@ def reschedule_task(
         return task
 
 
-def find_tasks_by_reference(ref: str, limit: int = _REFERENCE_MATCH_LIMIT) -> list[Task]:
+def find_tasks_by_reference(
+    ref: str,
+    limit: int = _REFERENCE_MATCH_LIMIT,
+    statuses: tuple[TaskStatus, ...] = (TaskStatus.pending,),
+) -> list[Task]:
     """Tìm việc theo cách người dùng nhắc tới nó: mã việc, hoặc một phần nội dung.
 
-    Chỉ tìm trong việc đang chờ — không ai "báo xong" một việc đã xong.
-    Gõ đúng mã thì ra tối đa một dòng, khỏi phải hỏi lại.
+    Mặc định chỉ tìm trong việc đang chờ — không ai "báo xong" một việc đã xong.
+    Nơi gọi nào chỉ ĐỌC (xem chi tiết, xem tiến độ) thì nới `statuses` ra, vì
+    việc đã chốt vẫn xem lại được.
+
+    Việc con cũng nằm trong tầm tìm: mã của nó ("TB-002.1") là một mã hợp lệ, và
+    nội dung của nó cũng khớp được như mọi dòng khác. Gõ đúng mã thì ra tối đa
+    một dòng, khỏi phải hỏi lại.
     """
-    pending = select(Task).where(Task.status == TaskStatus.pending)
+    pending = select(Task).where(col(Task.status).in_(statuses))
     code = parse_code(ref)
     with get_session() as session:
         if code is not None:

@@ -24,10 +24,11 @@ _GROUP_NAMESPACE = uuid.UUID("0a5c15f7-531f-57b1-9812-79ea011f54da")
 # ở đây cho chắc.
 _LEADING_ORDINAL = re.compile(r"^\s*\d+\s*[/.)\-]\s*")
 
-# Chấp nhận "TB-002", "TB002", "tb2", "#TB-2". Hai lookaround chặn việc bắt
-# nhầm một mẩu giữa chữ khác ("abc123" không phải mã việc).
+# Chấp nhận "TB-002", "TB002", "tb2", "#TB-2", và mã việc con "TB-002.1" /
+# "tb2.1". Hai lookaround chặn việc bắt nhầm một mẩu giữa chữ khác ("abc123"
+# không phải mã việc); đuôi ".N" là tuỳ chọn nên mã việc lớn vẫn khớp y như cũ.
 _CODE_RE = re.compile(
-    r"(?<![0-9A-Za-z])#?([A-Za-z]{2,4})-?([0-9]{1,4})(?![0-9A-Za-z])"
+    r"(?<![0-9A-Za-z])#?([A-Za-z]{2,4})-?([0-9]{1,4})(?:\.([0-9]{1,3}))?(?![0-9A-Za-z])"
 )
 
 _FALLBACK_PREFIX = "XX"
@@ -111,9 +112,24 @@ def format_code(prefix: str, seq: int) -> str:
     return f"{prefix}-{seq:0{_SEQ_DIGITS}d}"
 
 
+def format_subtask_code(parent_code: str, seq: int) -> str:
+    """Mã việc con = mã việc lớn + ".N": "TB-002" -> "TB-002.1".
+
+    KHÔNG đệm số 0 như mã việc lớn: một đầu việc hiếm khi có tới mười việc con,
+    mà "TB-002.001" thì dài quá để gõ lại trong tin nhắn.
+    """
+    return f"{parent_code}.{seq}"
+
+
 def parse_code(text: str) -> str | None:
-    """Chuẩn hoá cách gõ tắt của người dùng về mã đầy đủ, hoặc None nếu không phải mã."""
+    """Chuẩn hoá cách gõ tắt của người dùng về mã đầy đủ, hoặc None nếu không phải mã.
+
+    Trả về mã việc con ("TB-002.1") khi người dùng gõ phần ".N", vì đó là một
+    dòng khác hẳn dòng "TB-002" — cắt đuôi đi là báo xong nhầm cả việc lớn.
+    """
     match = _CODE_RE.search(text.strip())
     if match is None:
         return None
-    return format_code(match.group(1).upper(), int(match.group(2)))
+    code = format_code(match.group(1).upper(), int(match.group(2)))
+    sub_seq = match.group(3)
+    return format_subtask_code(code, int(sub_seq)) if sub_seq else code

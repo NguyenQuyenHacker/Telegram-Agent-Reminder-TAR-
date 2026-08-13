@@ -1,6 +1,7 @@
 from app.core.task_code import (
     derive_prefix,
     format_code,
+    format_subtask_code,
     parse_code,
     prefix_alternatives,
 )
@@ -77,3 +78,24 @@ class TestParseCode:
         # tra mã không thấy ai thì tự rơi về tìm theo nội dung, nên chỗ này chỉ
         # cần nhận dạng rộng tay.
         assert parse_code("abc123") == "ABC-123"
+
+
+class TestMaViecCon:
+    def test_ghep_ma_con_tu_ma_cha(self):
+        # Không đệm số 0 như mã việc lớn: "TB-002.001" dài quá để gõ lại
+        assert format_subtask_code("TB-002", 1) == "TB-002.1"
+        assert format_subtask_code("TB-002", 12) == "TB-002.12"
+
+    def test_doc_duoc_duoi_cham_n(self):
+        assert parse_code("TB-002.1") == "TB-002.1"
+        assert parse_code("tb2.1") == "TB-002.1"
+        assert parse_code("#TB-2.10") == "TB-002.10"
+
+    def test_khong_cat_duoi_thanh_ma_viec_lon(self):
+        # Cắt ".1" đi là "xong TB-002.1" báo xong nhầm cả việc lớn cùng danh sách
+        # con của nó, vì _close_task đóng lây việc con.
+        assert parse_code("xong TB-002.1 rồi") != "TB-002"
+
+    def test_ma_viec_lon_van_doc_y_nhu_cu(self):
+        assert parse_code("TB-002") == "TB-002"
+        assert parse_code("TB-002.") == "TB-002"

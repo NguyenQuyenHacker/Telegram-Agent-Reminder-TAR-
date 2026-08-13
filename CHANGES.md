@@ -62,3 +62,69 @@ tool đọc ra phải khớp cái tin nhắc gộp hiển thị. Lượt này **
 - `compileall` các file đã đụng — OK.
 - **Chưa test được bằng máy:** các guard trong `_close_task` / `_reopen_task` /
   `set_due_date` cần Postgres thật; mới chỉ đọc lại bằng mắt.
+
+---
+
+# Lượt 3 — mục 3 và mục 5 của [docs/todo.md](docs/todo.md)
+
+Hai tính năng mới: nhận ảnh / tin nhắn thoại, và chia việc lớn thành việc con
+kèm theo dõi tiến độ.
+
+## Mục 5 — việc con và tiến độ
+
+Nguyên tắc: **việc con VẪN là một dòng `task`**, chỉ khác ở `parent_task_id`.
+Nhờ vậy báo xong, hủy, đổi hạn, tra theo mã, hoàn tác — tất cả chạy nguyên xi
+trên việc con, không phải viết nhánh thứ hai. Chỉ **một tầng**: không gắn việc
+con vào việc con.
+
+| File | Đã đổi gì |
+|------|-----------|
+| [persistence/schema/schema.sql](persistence/schema/schema.sql) | Hai cột mới trên `task`: `parent_task_id` (tự trỏ), `next_sub_seq`. Kèm hai câu `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` để DB dựng từ schema cũ nâng cấp được (`CREATE TABLE IF NOT EXISTS` bỏ qua bảng đã có). Index `idx_task_parent`. |
+| [persistence/models/task.py](persistence/models/task.py) | Hai field tương ứng + property `is_subtask`. |
+| [app/core/task_code.py](app/core/task_code.py) | `format_subtask_code()`; `_CODE_RE` nhận thêm đuôi `.N` tuỳ chọn nên `parse_code("TB-002.1")` ra `"TB-002.1"` chứ **không** cắt thành `"TB-002"` — cắt là "xong TB-002.1" đóng nhầm cả việc lớn. |
+| [persistence/proc/subtasks.py](persistence/proc/subtasks.py) | **File mới.** `add_subtask` / `rename_subtask` / `get_subtasks` / `subtask_progress`. |
+| [persistence/proc/tasks.py](persistence/proc/tasks.py) | `get_due_tasks` bỏ qua việc con (chúng không được nhắc riêng). `_close_task` tách ra `_stamp_closed()` và **đóng lây việc con còn chờ** khi đóng việc lớn, trong cùng transaction. `find_tasks_by_reference` thêm tham số `statuses` cho nơi chỉ đọc. |
+| [app/telegram/messages.py](app/telegram/messages.py) | `progress_line()` (thanh `▰▱`), `task_detail_text()` (bảng chi tiết), `_due_phrase()` dùng chung cho tin nhắc gộp và bảng chi tiết, `_change_label()` tách khỏi `update_confirm_text`, `subtask_added_text` / `subtask_renamed_text`. `digest_text` nhận thêm `progress` (tuỳ chọn — chữ ký cũ vẫn chạy). |
+| [app/services/reminder_service.py](app/services/reminder_service.py) | Đọc tiến độ cả lô một lượt rồi đưa vào `digest_text`. |
+| [reminder_agent/utils/tools/task_detail.py](reminder_agent/utils/tools/task_detail.py) | **File mới.** Tool `get_task_detail`. |
+| [reminder_agent/utils/tools/update_subtask.py](reminder_agent/utils/tools/update_subtask.py) | **File mới.** Tool `propose_subtask_update` (`add` / `rename`). Xóa việc con thì dùng `propose_task_update(action="cancel")` với mã việc con — không có đường ghi thứ hai. |
+| [reminder_agent/utils/tools/task_view.py](reminder_agent/utils/tools/task_view.py) | `task_brief` thêm `is_subtask` và `progress`; `progress` là `null` khi chưa chia nhỏ, khác hẳn `{"done": 0, ...}`. |
+| [reminder_agent/utils/tools/query_tasks.py](reminder_agent/utils/tools/query_tasks.py) | Nạp tiến độ cả lô cho các dòng không phải việc con. |
+| [reminder_agent/graph.py](reminder_agent/graph.py) | `_UPDATE_ACTIONS` thêm `add_subtask` / `rename_subtask`. `_proposal_key()`: `add_subtask` gộp theo `(task_id, action, nội dung)` — gộp theo `task_id` như ba hành động kia thì "chia thành 4 đầu mục" chỉ còn lại đầu mục cuối. `call_tools` gom thêm `pending_views`, `answer()` gửi bảng chi tiết rồi dọn. |
+
+## Mục 3 — ảnh và tin nhắn thoại
+
+Đường đi: Telegram → tải bytes → một lượt gọi Gemini ra `{intent, text}` → **đi
+tiếp đúng đường mà tin nhắn gõ tay đi**. Sau khi có text thì hai loại đầu vào
+không còn khác gì nhau, nên graph không phải biết gì về ảnh hay audio.
+
+| File | Đã đổi gì |
+|------|-----------|
+| [app/telegram/media.py](app/telegram/media.py) | **File mới.** `extract_media()` đọc photo / voice / audio / document ảnh-hoặc-audio; `download_media()` tải về RAM, chặn trước 20MB bằng `getFile`. |
+| [reminder_agent/utils/media_text.py](reminder_agent/utils/media_text.py) | **File mới.** `understand_media()`. Dùng part kiểu `{"type": "media", ...}` cho **cả** ảnh lẫn audio — `"image_url"` không mang nổi audio. |
+| [reminder_agent/prompts/media_system.md](reminder_agent/prompts/media_system.md) | **File mới.** |
+| [reminder_agent/utils/schemas.py](reminder_agent/utils/schemas.py) | `MediaUnderstanding` — trả **cả** `intent` lẫn `text` trong một lượt. Lý do: `classify_message` bắt từ khoá "Tiếp theo:", mà lời thoại "nhớ nộp báo cáo trước thứ 6" không có từ khoá nào — nó sẽ rơi vào nhánh hỏi đáp, nơi **không tool nào tạo được đầu việc**. |
+| [reminder_agent/config/models.yaml](reminder_agent/config/models.yaml) | Vai `media` (timeout 60s: file thoại phải tải lên trước khi suy luận). |
+| [app/routers/webhooks.py](app/routers/webhooks.py) | Tách `_dispatch` / `_start_report_turn` / `_start_question_turn` khỏi `handle_text_message`; thêm `handle_media_message` và `route_message` (webhook + polling dùng chung). Trả lại cho người dùng thứ bot nghe/đọc được **trước** khi hành động. Trả lời bảng xác nhận bằng tin nhắn thoại cũng chốt được. |
+| [app/telegram/polling.py](app/telegram/polling.py) | Gọi `route_message` thay vì chỉ `handle_text_message` — dev local và production không thể lệch nhau. |
+| [reminder_agent/prompts/extract_system.md](reminder_agent/prompts/extract_system.md) | Thêm mục ĐẦU VÀO TỰ DO: không có khối "Tiếp theo:" thì trích mọi việc người dùng nhận làm; không nêu dự án nào thì nhóm là `"Việc chung"`. |
+| [reminder_agent/prompts/agent_system.md](reminder_agent/prompts/agent_system.md) | Bốn tool thay vì hai; mục SUBTASKS. |
+| [persistence/schema/seed_sample.sql](persistence/schema/seed_sample.sql) | TB-001 có 5 việc con (một cái đã hủy, nên số nhảy cóc ở `.2`), đọc ra đúng "Tiến độ: 2/4". |
+
+## Kiểm chứng lượt 3
+
+- `pytest tests` — **86 passed** (48 cũ + 38 mới ở
+  [tests/test_subtasks.py](tests/test_subtasks.py),
+  [tests/test_media.py](tests/test_media.py),
+  [tests/test_task_code.py](tests/test_task_code.py)).
+- **Chạy thật trên Postgres**: cấp mã `.1/.2/.3`, thêm trùng nội dung trả về
+  chính dòng cũ và không tiêu số thứ tự, chặn lồng hai tầng, `rename` từ chối
+  việc lớn, tìm theo mã việc con, tiến độ `1/3`, lượt quét nhắc không lấy việc
+  con, đóng việc lớn đóng lây cả ba việc con. Dữ liệu thử đã xoá sạch sau khi
+  kiểm.
+- **Chạy thật trên Gemini**: đọc ảnh ra text tiếng Việt; caption dạng câu hỏi ra
+  `intent="question"`; audio đi qua `inline_data` không lỗi 400, file không có
+  tiếng nói trả text rỗng và rơi đúng vào nhánh báo "không nghe rõ".
+- Bảng chi tiết và tin nhắc gộp dựng từ seed đúng như mẫu trong `docs/todo.md`.
+- **Chưa test được bằng máy:** `download_media()` (cần file thật trên Telegram),
+  và toàn bộ lượt hội thoại đi qua LLM (cần chat thật).

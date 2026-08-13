@@ -32,6 +32,13 @@ class Task(SQLModel, table=True):
     task_id: str = Field(primary_key=True)
     code: str | None = Field(default=None, unique=True)
     group_id: uuid.UUID = Field(foreign_key="project_group.group_id", index=True)
+    # Việc con trỏ về việc lớn của nó; NULL là việc lớn hoặc việc đứng một mình.
+    # Chỉ MỘT tầng — add_subtask từ chối gắn con vào một dòng đã có cha.
+    parent_task_id: str | None = Field(
+        default=None, foreign_key="task.task_id", index=True
+    )
+    # Số thứ tự kế tiếp cấp cho việc con: "TB-002" -> "TB-002.1". Chỉ tăng.
+    next_sub_seq: int = 1
     # Nạp sẵn cùng câu SELECT chính: đối tượng trả ra khỏi get_session() đã rời
     # session, lazy load lúc đó là DetachedInstanceError chứ không phải query.
     project_group: ProjectGroup | None = Relationship(
@@ -53,3 +60,7 @@ class Task(SQLModel, table=True):
     def group_name(self) -> str:
         """Tên nhóm để hiển thị. Rỗng nếu dòng nhóm đã biến mất khỏi DB."""
         return self.project_group.name if self.project_group else ""
+
+    @property
+    def is_subtask(self) -> bool:
+        return self.parent_task_id is not None

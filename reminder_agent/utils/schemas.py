@@ -18,6 +18,21 @@ class ExtractionResult(BaseModel):
     tasks: list[ExtractedTask]
 
 
+class MediaUnderstanding(BaseModel):
+    """Ảnh hoặc tin nhắn thoại đọc ra thành gì.
+
+    Trả về CẢ ý định lẫn nội dung trong một lượt gọi. Đọc nội dung xong rồi mới
+    đoán ý bằng keyword như tin nhắn text thì hỏng: một lời nhắn thoại "nhớ nộp
+    báo cáo trước thứ 6" không chứa từ khoá "Tiếp theo:" nào, nó sẽ bị đẩy sang
+    nhánh hỏi đáp — nơi không có tool nào tạo được đầu việc.
+    """
+
+    intent: Literal["tasks", "question"] = Field(
+        description='"tasks" nếu nội dung nói về việc cần làm, "question" nếu là câu hỏi'
+    )
+    text: str = Field(description="Nội dung đọc/nghe được, bằng tiếng Việt")
+
+
 class DecisionResult(BaseModel):
     """Ý định của người dùng khi xem bảng đầu việc vừa trích.
 

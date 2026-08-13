@@ -25,6 +25,15 @@ models:
     timeout: 30
     max_retries: 2
 
+  # Đọc ảnh / nghe tin nhắn thoại. Chép lại đúng nguyên văn nên temperature 0.
+  # timeout gấp đôi các vai khác: một file thoại vài phút phải tải lên rồi mới
+  # bắt đầu suy luận, 30s là chưa đủ cho lượt đó.
+  media:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 60
+    max_retries: 2
+
   # Hỏi đáp: diễn đạt tự nhiên hơn, và phải gọi tool rồi tổng hợp nên cho thêm
   # thời gian
   agent:

@@ -5,7 +5,8 @@ from langchain_core.tools import tool
 
 from app.core.datetime_utils import now_local
 from app.core.priority import maybe_escalate
-from persistence.models.task import Priority, TaskStatus
+from persistence.models.task import Priority, Task, TaskStatus
+from persistence.proc.subtasks import subtask_progress
 from persistence.proc.tasks import query_tasks as _query_tasks
 from reminder_agent.utils.tools.task_view import task_brief
 
@@ -87,4 +88,15 @@ async def query_tasks(
         # bằng SQL trên cột thô thì "việc nào đang gấp" rụng hết những việc được
         # nâng vì quá hạn. Đổi lại, trần _QUERY_RESULT_LIMIT áp trước bộ lọc này.
         tasks = [task for task in tasks if maybe_escalate(task, now) == wanted_priority]
-    return [task_brief(task, now) for task in tasks]
+
+    progress = await asyncio.to_thread(_progress_of_parents, tasks)
+    return [task_brief(task, now, progress.get(task.task_id)) for task in tasks]
+
+
+def _progress_of_parents(tasks: list[Task]) -> dict[str, tuple[int, int]]:
+    """Tiến độ việc con của những dòng KHÔNG phải việc con, đọc một lượt cho cả lô.
+
+    Hỏi tiến độ của một việc con là vô nghĩa (nó không có con) và tốn thêm dòng
+    trong mệnh đề IN, nên lọc trước khi hỏi.
+    """
+    return subtask_progress([task.task_id for task in tasks if not task.is_subtask])

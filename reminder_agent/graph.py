@@ -53,12 +53,16 @@ from app.telegram.messages import (
     need_reason_text,
     no_answer_text,
     saved_text,
+    subtask_added_text,
+    subtask_renamed_text,
+    task_detail_text,
     update_confirm_text,
     update_failed_text,
 )
 from app.telegram.sender import send_message
 from persistence.models.task import Priority, Task
 from persistence.proc.groups import get_or_create_group
+from persistence.proc.subtasks import add_subtask, rename_subtask
 from persistence.proc.tasks import (
     cancel_task,
     get_task,
@@ -109,8 +113,24 @@ def _parse_iso_date(value: str | None) -> date | None:
         return None
 
 
+def _proposal_key(proposal: dict) -> tuple:
+    """Khoá gộp: hai đề xuất cùng khoá thì cái sau đè cái trước.
+
+    Ba hành động done/cancel/reschedule cùng ghi vào TRẠNG THÁI của một dòng nên
+    dùng chung khoá — chúng loại trừ nhau. Thêm việc con thì không: mỗi lời gọi
+    sinh một dòng mới, gộp theo task_id là "chia TB-002 thành 4 đầu mục" chỉ còn
+    lại đúng đầu mục cuối cùng.
+    """
+    action = proposal.get("action")
+    if action == "add_subtask":
+        return (proposal["task_id"], action, proposal.get("subtask_content"))
+    if action == "rename_subtask":
+        return (proposal["task_id"], action)
+    return (proposal["task_id"], "state")
+
+
 def _merge_proposals(pending: list[dict], new_proposals: list[dict]) -> list[dict]:
-    """Gộp đề xuất mới vào danh sách đang chờ, mỗi việc chỉ giữ đề xuất cuối.
+    """Gộp đề xuất mới vào danh sách đang chờ, mỗi khoá chỉ giữ đề xuất cuối.
 
     LLM có thể đề xuất hai lần cho cùng một việc trong một lượt ("xong TB-002"
     rồi tự sửa thành "dời hạn TB-002"). Giữ cả hai là ghi tuần tự hai lệnh lên
@@ -119,8 +139,10 @@ def _merge_proposals(pending: list[dict], new_proposals: list[dict]) -> list[dic
     báo lỗi. Bảng xác nhận cũng đọc từ chính danh sách này, nên gộp ở đây là
     thứ người dùng thấy và thứ được ghi luôn khớp nhau.
     """
-    by_task = {proposal["task_id"]: proposal for proposal in [*pending, *new_proposals]}
-    return list(by_task.values())
+    by_key = {
+        _proposal_key(proposal): proposal for proposal in [*pending, *new_proposals]
+    }
+    return list(by_key.values())
 
 
 def _apply_done(update: dict) -> Task | None:
@@ -144,12 +166,26 @@ def _apply_reschedule(update: dict) -> Task | None:
     return set_due_date(update["task_id"], new_due, compute_next_remind_at(now_local()))
 
 
-# action -> (hàm ghi DB, câu xác nhận). Cả ba hàm ghi đều đồng bộ nên
-# apply_updates gọi chúng qua to_thread, không hàm nào tự biết mình chạy ở đâu.
+def _apply_add_subtask(update: dict) -> Task | None:
+    # task_id ở đây là việc LỚN, khác bốn hàm còn lại: đề xuất "thêm việc con"
+    # trỏ vào cha, còn dòng được ghi là một dòng chưa tồn tại lúc đề xuất.
+    return add_subtask(update["task_id"], update.get("subtask_content") or "")
+
+
+def _apply_rename_subtask(update: dict) -> Task | None:
+    return rename_subtask(update["task_id"], update.get("subtask_content") or "")
+
+
+# action -> (hàm ghi DB, câu xác nhận). Mọi hàm ghi đều đồng bộ nên apply_updates
+# gọi chúng qua to_thread, không hàm nào tự biết mình chạy ở đâu. Câu xác nhận
+# đều nhận đúng một tham số Task — dòng vừa ghi — nên thêm hành động mới chỉ là
+# thêm một dòng ở bảng này.
 _UPDATE_ACTIONS = {
     "done": (_apply_done, done_confirmation_text),
     "cancel": (_apply_cancel, cancel_confirmation_text),
     "reschedule": (_apply_reschedule, due_updated_text),
+    "add_subtask": (_apply_add_subtask, subtask_added_text),
+    "rename_subtask": (_apply_rename_subtask, subtask_renamed_text),
 }
 
 
@@ -433,13 +469,17 @@ class ReminderAgent:
         last_message = state["messages"][-1]
         tool_messages = []
         proposals = []
+        views = []
         for tool_call in last_message.tool_calls:
             result = await self._invoke_tool(tool_call)
-            # Đề xuất được gom ở đây, từ giá trị trả về gốc của tool. Không đọc
-            # lại từ câu trả lời của LLM: LLM có thể kể sai mã việc, còn đây là
-            # đúng dòng mà propose_task_update đã tra ra.
-            if isinstance(result, dict) and result.get("status") == "proposed":
-                proposals.append(result)
+            # Đề xuất và bảng chi tiết được gom ở đây, từ giá trị trả về GỐC của
+            # tool. Không đọc lại từ câu trả lời của LLM: LLM có thể kể sai mã
+            # việc hay sai số việc con, còn đây là đúng thứ tool đã tra ra.
+            if isinstance(result, dict):
+                if result.get("status") == "proposed":
+                    proposals.append(result)
+                elif result.get("status") == "detail":
+                    views.append(result)
             tool_messages.append(
                 ToolMessage(
                     content=str(result),
@@ -453,6 +493,7 @@ class ReminderAgent:
             "pending_updates": _merge_proposals(
                 state.get("pending_updates") or [], proposals
             ),
+            "pending_views": [*(state.get("pending_views") or []), *views],
         }
 
     def route_agent(self, state: GraphState) -> str:
@@ -471,6 +512,10 @@ class ReminderAgent:
 
         Bảng đề xuất gửi ở ĐÂY chứ không ở ask_update_confirm, đúng lý do đã ghi
         ở ask_confirm: node có interrupt() chạy lại từ đầu mỗi lần resume.
+
+        Bảng chi tiết dọn sạch ở mọi nhánh, kể cả nhánh không gửi nó: một bảng
+        sót lại trong state là lượt sau vừa trả lời xong đã kèm chi tiết của một
+        đầu việc người dùng không hề nhắc tới.
         """
         pending_updates = state.get("pending_updates") or []
         # Có đề xuất thì BỎ luôn lời của LLM: nó chỉ kể lại y hệt những gì bảng
@@ -478,14 +523,21 @@ class ReminderAgent:
         # chuẩn — nó dựng từ giá trị gốc của tool, không qua tay LLM kể lại.
         if pending_updates:
             await send_message(state["chat_id"], update_confirm_text(pending_updates))
-            return {}
+            return {"pending_views": []}
+
+        # Cùng nguyên tắc cho bảng chi tiết việc con: code dựng bảng, LLM im.
+        pending_views = state.get("pending_views") or []
+        if pending_views:
+            for view in pending_views:
+                await send_message(state["chat_id"], task_detail_text(view))
+            return {"pending_views": []}
 
         last_message = state["messages"][-1]
         # Kiểm content trước rồi mới str(): content rỗng của Gemini có thể là []
         # chứ không phải "", str([]) ra "[]" và người dùng nhận đúng hai ký tự đó.
         text = str(last_message.content) if last_message.content else no_answer_text()
         await send_message(state["chat_id"], text)
-        return {}
+        return {"pending_views": []}
 
     def route_after_answer(self, state: GraphState) -> str:
         return "ask_update_confirm" if state.get("pending_updates") else END

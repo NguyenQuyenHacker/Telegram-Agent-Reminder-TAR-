@@ -14,7 +14,7 @@ from aiogram import Dispatcher
 from aiogram.types import Message
 from fastapi import FastAPI
 
-from app.routers.webhooks import handle_text_message
+from app.routers.webhooks import route_message
 from app.telegram.bot import bot
 
 log = logging.getLogger(__name__)
@@ -25,8 +25,9 @@ def _build_dispatcher(app: FastAPI) -> Dispatcher:
 
     @dp.message()
     async def _on_message(message: Message) -> None:
-        if message.text:
-            await handle_text_message(app.state.graph, message)
+        # Cùng một route_message với webhook, để dev local và production không
+        # thể lệch nhau về việc loại tin nhắn nào đi vào handler nào.
+        await route_message(app.state.graph, message)
 
     return dp
 

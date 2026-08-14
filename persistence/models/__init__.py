@@ -1,4 +1,11 @@
-from persistence.models.project_group import ProjectGroup
-from persistence.models.task import Priority, Task, TaskStatus
+from persistence.models.doc_chunk import EMBEDDING_DIM, DocChunk
+from persistence.models.project import Project
+from persistence.models.source_document import FileKind, SourceDocument
 
-__all__ = ["ProjectGroup", "Task", "TaskStatus", "Priority"]
+__all__ = [
+    "EMBEDDING_DIM",
+    "DocChunk",
+    "FileKind",
+    "Project",
+    "SourceDocument",
+]

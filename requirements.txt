@@ -4,19 +4,37 @@ aiogram==3.15.0
 apscheduler==3.10.4
 sqlmodel==0.0.22
 psycopg[binary]==3.2.3
-pydantic-settings==2.6.1
+# Kiểu VECTOR cho SQLAlchemy/SQLModel. Extension `vector` phải được bật sẵn ở
+# phía Postgres (Neon): CREATE EXTENSION IF NOT EXISTS vector;
+pgvector==0.5.0
 python-dotenv==1.0.1
 langgraph==0.2.60
 langgraph-checkpoint-postgres==2.0.9
-langchain-core==0.3.28
+# Nới thay vì ghim ==0.3.28: môi trường đang chạy 0.3.86 và có sẵn `langchain`.
+# Ghim cứng bản cũ là `pip install -r` HẠ CẤP core rồi kéo theo lỗi ở
+# langchain-text-splitters. Chặn <0.4 vì 0.4 mới là bản phá tương thích.
+langchain-core>=0.3.28,<0.4
+# Kèm luôn GoogleGenerativeAIEmbeddings -> không cần thư viện embedding riêng
 langchain-google-genai==2.0.7
+# Document loader: TextLoader (.txt) và UnstructuredExcelLoader (.xlsx).
+langchain-community>=0.3.14,<0.4
+# UnstructuredExcelLoader dùng gói này bên dưới (partition_xlsx). CHƯA CÀI ở
+# tar_env lúc viết dòng này — bản thân `unstructured` có sẵn nhưng .load() cần
+# thêm `pandas` (extra "xlsx") mà không phải phụ thuộc bắt buộc của gói.
+# Ngoài ra `unstructured` phụ thuộc `python-magic`, trên Windows cần bản DLL
+# kèm sẵn (`python-magic-bin`) chứ `python-magic` suông sẽ ném
+# "failed to find libmagic" — CHƯA XÁC NHẬN partition_xlsx có chạm nhánh này
+# không lúc gọi .load() với file .xlsx đã biết định dạng trước.
+# unstructured[xlsx]==0.25.2   # <- bạn tự pip, báo lại để chạy test thật
+# RecursiveCharacterTextSplitter
+langchain-text-splitters>=0.3.5,<0.4
 python-dateutil==2.9.0.post0
 tenacity==9.0.0
-pyyaml==6.0.2
+# openpyxl: UnstructuredExcelLoader dùng làm engine đọc .xlsx bên dưới pandas.
+openpyxl==3.1.5
+# Đọc TAR_agent/utils/models.yaml. 6.0.2 không có wheel cho Python 3.14.
+pyyaml==6.0.3
+# Windows và image Docker slim KHÔNG có sẵn cơ sở dữ liệu múi giờ IANA, thiếu gói
+# này là ZoneInfo("Asia/Ho_Chi_Minh") ném ZoneInfoNotFoundError ngay lúc import.
+tzdata==2026.3
 pytest==8.3.4
-# Tuỳ chọn: sửa prompt trên UI + trace agent. Không cài thì code tự dùng prompt .md.
-# Muốn có TRACE thì phải cài kèm gói `langchain`: langfuse.langchain.CallbackHandler
-# import từ đó, langchain-core không đủ. Chốt <0.4 — bản 1.x mới là bản xung đột
-# với langchain-core 0.3.x. Chỉ cần sửa prompt trên UI thì không cần langchain.
-# langfuse>=3.0.0
-# langchain>=0.3,<0.4

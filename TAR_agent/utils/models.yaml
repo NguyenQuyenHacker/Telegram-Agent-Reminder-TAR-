@@ -1,0 +1,45 @@
+# Tham số hành vi của agent. Đọc bởi TAR_agent/utils/config.py.
+#
+# Mỗi khối dưới `models:` splat thẳng vào ChatGoogleGenerativeAI(**khối) nên tên
+# khoá phải đúng tên tham số của lớp đó.
+#
+# CHỈ để tham số không nhạy cảm ở đây — file này lên git, khoá thì không.
+# Prompt cũng không khai ở đây: prompt là file .md trong prompts/.
+
+models:
+  # Bot admin: liệt kê / xoá / thống kê. Dứt khoát, không cần sáng tạo.
+  admin:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 30
+    max_retries: 2
+
+  # Bot client: hỏi đáp, phải tổng hợp nhiều đoạn nên cho thêm thời gian.
+  client:
+    model: gemini-2.5-flash
+    temperature: 0.3
+    timeout: 45
+    max_retries: 2
+
+embedding:
+  # text-embedding-004 đã bị gỡ khỏi API (404).
+  model: models/gemini-embedding-001
+  # Số văn bản mỗi lời gọi. Gemini có trần phía server; một file vài trăm chunk
+  # gọi từng cái là chậm gấp bội và dễ dính rate limit.
+  batch_size: 100
+  # Số chiều KHÔNG khai ở đây: nó phải khớp cột VECTOR trong schema.sql, nên
+  # nguồn duy nhất là EMBEDDING_DIM ở persistence/models/doc_chunk.py.
+  # Khai hai nơi là sớm muộn lệch nhau mà không có lỗi nào nổ.
+
+agent:
+  # Trần số vòng agent <-> tools, chặn vòng lặp chạy mãi.
+  max_tool_rounds: 3
+  # Đếm SỐ MESSAGE, không phải token: một vòng tra tốn 2 message (AIMessage
+  # tool_calls + ToolMessage), nên 20 ~ 5-6 lượt hỏi đáp có tra cứu.
+  max_history_messages: 20
+
+# Truyền thẳng vào RecursiveCharacterTextSplitter.
+chunking:
+  chunk_size: 1000
+  # Chồng lấn: cắt đúng giữa một câu là cả hai chunk mất nghĩa.
+  chunk_overlap: 200

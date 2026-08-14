@@ -22,11 +22,21 @@ Ghi lại để quyết định sau, kèm file + số dòng (theo cây mã sau k
 > nhưng hai hàm giờ dùng chung `_reopen_task()` và đã xoá cả `done_at` lẫn
 > `cancelled_at` khi mở lại — xem [CHANGES.md](CHANGES.md).
 
-**Nhận xét chung về nhóm này:** 1.1–1.3 + 1.6 là toàn bộ đường hoàn tác của
-R8 (`undo_window_hours`, `Task.done_at`, `Task.cancelled_at` phần khôi phục).
-Dữ liệu vẫn được ghi đúng, nhưng **không có tool nào của agent gọi tới**, nên
-người dùng hiện không có cách nào hoàn tác. Đây là tính năng chưa nối dây chứ
-không hẳn là rác — cần quyết định: nối vào agent, hay bỏ hẳn cả cụm.
+> **Cập nhật (lượt dọn dẹp mở đầu chuyển đổi sang RAG):** 1.1–1.6 **đã xoá hết**.
+> Quyết định cho cụm hoàn tác R8 là **bỏ hẳn cả cụm** — sản phẩm mới không có
+> khái niệm hoàn tác task. Đi theo: `undo_done`, `undo_cancel`, `_reopen_task`,
+> `_undo_deadline`, `undo_confirmation_text`, và biến `UNDO_WINDOW_HOURS` ở
+> `config.py` + `.env.example` + README.
+>
+> 1.7 (`TEST/`) **giữ nguyên, chưa đụng**: thư mục nằm ngoài git (`.gitignore`
+> chặn), xoá là mất hẳn không khôi phục được. Nó còn mẫu `bot.download()` mà
+> luồng ingest sắp cần.
+
+**Nhận xét chung về nhóm này (giữ lại làm ghi chép):** 1.1–1.3 + 1.6 là toàn bộ
+đường hoàn tác của R8 (`undo_window_hours`, `Task.done_at`, `Task.cancelled_at`
+phần khôi phục). Dữ liệu vẫn được ghi đúng, nhưng **không có tool nào của agent
+gọi tới**, nên người dùng chưa bao giờ có cách nào hoàn tác. Là tính năng chưa
+nối dây chứ không hẳn là rác — và đã chọn bỏ.
 
 ---
 
@@ -56,6 +66,10 @@ không hẳn là rác — cần quyết định: nối vào agent, hay bỏ hẳ
 | 3.1 | [requirements.txt](requirements.txt) | **Thiếu `tzdata`.** `app/core/datetime_utils.py:6` gọi `ZoneInfo("Asia/Ho_Chi_Minh")`; Windows và image Docker slim không có sẵn cơ sở dữ liệu múi giờ IANA → `ZoneInfoNotFoundError` ngay lúc import. Gặp đúng lỗi này khi dựng môi trường chạy test cho lượt rà soát này. |
 | 3.2 | [requirements.txt](requirements.txt) | `pyyaml==6.0.2` không build được trên Python 3.14 (không có wheel, build from source lỗi). Cần nâng pin nếu định chạy trên 3.14. |
 | 3.3 | [TEST/test_bot.py:13](TEST/test_bot.py#L13) | `os.environ["BOT_TOKEN"]` — `KeyError` ngay lúc import nếu chưa có biến. Nếu `pytest` được trỏ vào thư mục này thì cả lượt chạy hỏng. |
+
+> **Cập nhật (lượt dọn dẹp mở đầu chuyển đổi sang RAG):** 3.1 và 3.2 **đã sửa** —
+> thêm `tzdata==2026.3`, nâng `pyyaml` lên `6.0.3` (bản có wheel cho 3.14).
+> 3.3 còn nguyên vì `TEST/` chưa bị đụng tới.
 
 **Không tìm thấy secret hardcode.** `.env` đã nằm trong `.gitignore`, và quét
 toàn bộ `*.py` theo mẫu `api_key/token/secret/password = "..."` không ra kết quả.

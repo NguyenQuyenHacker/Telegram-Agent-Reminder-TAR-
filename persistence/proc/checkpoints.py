@@ -12,16 +12,13 @@ Bảng do LangGraph tự tạo (.setup()), không có model SQLModel nên phải
 thô. Tên bảng theo langgraph-checkpoint-postgres 2.x.
 """
 
-import logging
 from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import text
 
-from app.core.datetime_utils import now_local
+from TAR_agent.utils.config import now_local
 from persistence.pool import get_session
-
-log = logging.getLogger(__name__)
 
 # UUID v1/v6 đếm thời gian bằng khoảng 100 nanosecond kể từ 1582-10-15, còn
 # timestamp() đếm giây kể từ 1970-01-01 — hai hằng số này bắc cầu giữa hai mốc.
@@ -98,6 +95,4 @@ def purge_old_checkpoints(days: int) -> int:
     with get_session() as session:
         result = session.execute(text(_DELETE_SQL), {"cutoff_uuid": _cutoff_uuid(days)})
         session.commit()
-        deleted = result.rowcount or 0
-    log.info("PURGE: xoá %d checkpoint cũ hơn %d ngày", deleted, days)
-    return deleted
+        return result.rowcount or 0

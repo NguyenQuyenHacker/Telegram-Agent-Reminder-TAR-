@@ -1,49 +1,65 @@
 """Chế độ long-polling cho dev local.
 
 Máy local không có URL public HTTPS nên Telegram không gọi được webhook. Khi
-TELEGRAM_WEBHOOK_URL trống, app tự chuyển sang polling: aiogram chủ động gọi
-getUpdates rồi đẩy update vào ĐÚNG các handler mà webhook dùng, nên luồng xử lý
-y hệt production, chỉ khác đường update đi vào.
+TELEGRAM_WEBHOOK_URL trống, app tự chuyển sang polling cho CẢ HAI bot: aiogram
+chủ động gọi getUpdates rồi đẩy update vào ĐÚNG các handler mà webhook dùng,
+nên luồng xử lý y hệt production, chỉ khác đường update đi vào.
 """
 
 import asyncio
-import logging
 from contextlib import suppress
 
 from aiogram import Dispatcher
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 from fastapi import FastAPI
 
-from app.routers.webhooks import handle_text_message
-from app.telegram.bot import bot
-
-log = logging.getLogger(__name__)
+from app.routers.webhooks import HANDLERS
+from app.telegram.bots import ALL_ROLES, BotRole
 
 
-def _build_dispatcher(app: FastAPI) -> Dispatcher:
-    dp = Dispatcher()
+def _build_dispatcher(app: FastAPI, role: BotRole) -> Dispatcher:
+    # Cùng bảng handler mà endpoint webhook dùng: luồng xử lý y hệt production.
+    handle = HANDLERS[role.name]["message"]
+    handle_cb = HANDLERS[role.name]["callback"]
+    dispatcher = Dispatcher()
 
-    @dp.message()
+    @dispatcher.message()
     async def _on_message(message: Message) -> None:
-        if message.text:
-            await handle_text_message(app.state.graph, message)
+        await handle(app, message)
 
-    return dp
+    @dispatcher.callback_query()
+    async def _on_callback(callback: CallbackQuery) -> None:
+        await handle_cb(app, callback)
 
-
-async def start_dev_polling(app: FastAPI) -> tuple[Dispatcher, asyncio.Task[None]]:
-    # Telegram không cho vừa webhook vừa getUpdates -> gỡ webhook cũ nếu còn
-    await bot.delete_webhook(drop_pending_updates=True)
-    dp = _build_dispatcher(app)
-    task = asyncio.create_task(
-        dp.start_polling(bot, handle_signals=False, close_bot_session=False)
-    )
-    log.info("Dev polling: đang lắng nghe tin nhắn qua getUpdates")
-    return dp, task
+    return dispatcher
 
 
-async def stop_dev_polling(dp: Dispatcher, task: asyncio.Task[None]) -> None:
-    await dp.stop_polling()
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+async def start_dev_polling(app: FastAPI) -> list[tuple[Dispatcher, asyncio.Task[None]]]:
+    running = []
+    for role in ALL_ROLES:
+        # Telegram không cho vừa webhook vừa getUpdates -> gỡ webhook cũ nếu còn
+        await role.bot.delete_webhook(drop_pending_updates=True)
+        dispatcher = _build_dispatcher(app, role)
+        task = asyncio.create_task(
+            dispatcher.start_polling(
+                role.bot, handle_signals=False, close_bot_session=False
+            )
+        )
+        running.append((dispatcher, task))
+    return running
+
+
+async def stop_dev_polling(
+    running: list[tuple[Dispatcher, asyncio.Task[None]]],
+) -> None:
+    for dispatcher, task in running:
+        # RuntimeError("Polling is not started"): --reload tắt app trong lúc
+        # start_polling() còn chưa kịp chạy tới chỗ đánh dấu "đã bắt đầu".
+        # Ném ra ở đây làm hỏng nốt phần dọn dẹp còn lại của lifespan (pool
+        # chẳng hạn), mà bản thân nó không có gì để sửa — polling chưa chạy thì
+        # cũng chẳng có gì phải dừng.
+        with suppress(RuntimeError):
+            await dispatcher.stop_polling()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task

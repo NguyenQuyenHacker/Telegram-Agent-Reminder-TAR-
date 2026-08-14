@@ -3,13 +3,12 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.core.config import settings
-from app.services.reminder_service import run_job_a
+from TAR_agent.utils.config import settings
 from persistence.proc.checkpoints import purge_old_checkpoints
 
 log = logging.getLogger(__name__)
 
-# 3h sáng: ngoài khung giờ nhắc việc nên không đụng Job A
+# 3h sáng: giờ không ai nhắn cho bot, dọn dẹp không giành tài nguyên với ai
 _PURGE_HOUR = 3
 
 
@@ -22,15 +21,13 @@ async def _purge_checkpoints() -> None:
 
 
 def build_scheduler() -> AsyncIOScheduler:
+    """Chỉ còn một việc nền: dọn checkpoint LangGraph.
+
+    Job A (quét việc tới hạn rồi gửi tin nhắc) đã bị bỏ hẳn cùng chức năng nhắc
+    việc. Scheduler giữ lại vì bảng checkpoint vẫn phình theo mỗi lượt chạy graph
+    và không ai tự dọn.
+    """
     scheduler = AsyncIOScheduler(timezone=settings.local_timezone)
-    scheduler.add_job(
-        run_job_a,
-        "interval",
-        minutes=settings.job_a_interval_minutes,
-        id="job_a",
-        max_instances=1,
-        coalesce=True,
-    )
     scheduler.add_job(
         _purge_checkpoints,
         "cron",

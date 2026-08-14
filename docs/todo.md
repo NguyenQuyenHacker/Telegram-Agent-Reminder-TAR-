@@ -23,18 +23,3 @@
 
 - Mỗi lượt nhắc chỉ gửi một tin, không gửi rời rạc
 - Chia nhóm ưu tiên cao, bình thường, quá hạn
-
-## 5. Chia task lớn thành task con và theo dõi tiến độ
-
-- Một task lớn có thể gồm nhiều task con
-- Thêm, sửa, xóa task con qua tin nhắn
-- Xem được tiến độ task lớn theo task con đã xong
-- Ví dụ cho phần 5
-"  
-  📌 #31 – Bổ sung quy trình tin học hóa — hạn 19/07 (còn 6 ngày)
-  Tiến độ: 2/4 (50%) ▰▰▰▱▱▱
-  ✔️ 31.1 Khảo sát hiện trạng
-  ✔️ 31.5 Họp thống nhất với phòng nghiệp vụ
-  ⬜ 31.3 Viết tài liệu mô tả + biểu mẫu
-  ⬜ 31.4 Trình sếp duyệt
-"

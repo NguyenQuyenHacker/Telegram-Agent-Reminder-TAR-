@@ -26,7 +26,6 @@ CHAT_ID = 6_607_323_870
 ADMIN_ID = 6_607_323_870
 
 
-# ─────────────────────── Giả lập aiogram ───────────────────────
 
 
 @dataclass
@@ -101,7 +100,6 @@ class GraphNo:
         raise self.loi
 
 
-# ─────────────────────── Fixture ───────────────────────
 
 
 @pytest.fixture
@@ -129,7 +127,6 @@ def bam_nut(app, callback) -> None:
     asyncio.run(webhooks.handle_admin_callback(app, callback))
 
 
-# ─────────────────────── Test ───────────────────────
 
 
 class TestMatKetNoiDB:

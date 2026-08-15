@@ -16,21 +16,24 @@ langgraph-checkpoint-postgres==2.0.9
 langchain-core>=0.3.28,<0.4
 # Kèm luôn GoogleGenerativeAIEmbeddings -> không cần thư viện embedding riêng
 langchain-google-genai==2.0.7
-# Document loader: TextLoader (.txt) và UnstructuredExcelLoader (.xlsx).
+# EnsembleRetriever (hybrid BM25 + vector) nằm ở gói `langchain` chứ không phải
+# langchain-core. tar_env TÌNH CỜ có sẵn 0.3.30 nên máy dev chạy được mà không
+# khai — Docker build sạch sẽ nổ ImportError ngay lúc dựng graph client.
+langchain>=0.3.14,<0.4
+# Document loader: TextLoader (.txt). Bản .xlsx KHÔNG còn đi qua gói này nữa —
+# `unstructured[xlsx]` đã bỏ hẳn, loaders.py đọc thẳng bằng openpyxl. Nhờ vậy
+# không còn phụ thuộc `pandas` / `libmagic`, hai thứ chưa bao giờ kiểm chứng
+# được trên Windows.
 langchain-community>=0.3.14,<0.4
-# UnstructuredExcelLoader dùng gói này bên dưới (partition_xlsx). CHƯA CÀI ở
-# tar_env lúc viết dòng này — bản thân `unstructured` có sẵn nhưng .load() cần
-# thêm `pandas` (extra "xlsx") mà không phải phụ thuộc bắt buộc của gói.
-# Ngoài ra `unstructured` phụ thuộc `python-magic`, trên Windows cần bản DLL
-# kèm sẵn (`python-magic-bin`) chứ `python-magic` suông sẽ ném
-# "failed to find libmagic" — CHƯA XÁC NHẬN partition_xlsx có chạm nhánh này
-# không lúc gọi .load() với file .xlsx đã biết định dạng trước.
-# unstructured[xlsx]==0.25.2   # <- bạn tự pip, báo lại để chạy test thật
+# BM25Retriever.from_texts() import gói này BÊN TRONG hàm, nên thiếu nó thì
+# import module vẫn chạy và chỉ nổ lúc tra cứu lần đầu. CHƯA CÀI ở tar_env.
+rank_bm25==0.2.2
 # RecursiveCharacterTextSplitter
 langchain-text-splitters>=0.3.5,<0.4
 python-dateutil==2.9.0.post0
 tenacity==9.0.0
-# openpyxl: UnstructuredExcelLoader dùng làm engine đọc .xlsx bên dưới pandas.
+# openpyxl: engine đọc .xlsx DUY NHẤT — loaders.read_workbook mở workbook một
+# lần cho cả hai đầu ra (Document cho RAG, lưới ô cho extract).
 openpyxl==3.1.5
 # Đọc TAR_agent/utils/models.yaml. 6.0.2 không có wheel cho Python 3.14.
 pyyaml==6.0.3

@@ -9,7 +9,9 @@ Dùng bản đồng bộ bọc to_thread: bản async của langchain-core bỏ 
 
 import asyncio
 
-from TAR_agent.utils.config import EMBEDDING, EMBEDDING_DIM, embedding_model
+from TAR_agent.utils.config import EMBEDDING_DIM, embedding_model, load_config
+
+EMBEDDING = load_config()["embedding"]
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:
@@ -41,10 +43,15 @@ async def embed_documents(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-async def embed_query(text: str) -> list[float]:
-    """Vector cho câu hỏi lúc TRA."""
-    return await asyncio.to_thread(
-        embedding_model().embed_query,
+def embed_query_sync(text: str) -> list[float]:
+    """Vector cho câu hỏi lúc TRA. CHẶN event loop — chỉ gọi từ trong thread.
+
+    Có bản đồng bộ vì tầng retriever của LangChain (`BaseRetriever`,
+    `EnsembleRetriever`) là đồng bộ: cả vòng tra cứu đã nằm gọn trong MỘT
+    `asyncio.to_thread`, gọi bản async ở giữa là phải dựng thêm một event loop
+    lồng trong thread đó.
+    """
+    return embedding_model().embed_query(
         text,
         task_type="RETRIEVAL_QUERY",
         output_dimensionality=EMBEDDING_DIM,

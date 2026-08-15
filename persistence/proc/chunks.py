@@ -6,8 +6,10 @@ Tách transaction là có lúc kho giữ một tài liệu "đã nạp" với 0 
 """
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, delete, select
 
 from persistence.models import DocChunk, SourceDocument
@@ -35,13 +37,57 @@ def insert_many(session: Session, chunks: list[DocChunk]) -> int:
     return len(chunks)
 
 
-def count_by_document(document_id: uuid.UUID) -> int:
+def corpus_fingerprint(project_id: uuid.UUID) -> tuple[int, datetime | None]:
+    """Dấu vân tay của kho một dự án: (số chunk, lần nạp gần nhất).
+
+    Dùng để vô hiệu chỉ mục BM25 đang giữ trong RAM. Hai con số này đổi khi và
+    chỉ khi có tài liệu được nạp, ghi đè hoặc xoá — đủ để phát hiện, và rẻ hơn
+    nhiều so với đọc lại cả kho để so.
+
+    `max(uploaded_at)` chứ không chỉ `count`: ghi đè một tài liệu bằng bản mới
+    có ĐÚNG số chunk như cũ là chuyện thường (sửa vài ô trong file xlsx), lúc
+    đó riêng `count` không đổi và chỉ mục cũ sống mãi với nội dung đã lỗi thời.
+    """
     with get_session() as session:
-        return session.exec(
-            select(func.count(DocChunk.chunk_id)).where(
-                DocChunk.document_id == document_id
+        count = session.exec(
+            select(func.count(DocChunk.chunk_id)).where(  # type: ignore[arg-type]
+                DocChunk.project_id == project_id
             )
         ).one()
+        latest = session.exec(
+            select(func.max(SourceDocument.uploaded_at)).where(  # type: ignore[arg-type]
+                SourceDocument.project_id == project_id
+            )
+        ).one()
+        return count, latest
+
+
+def load_corpus(project_id: uuid.UUID) -> list[tuple[DocChunk, SourceDocument]]:
+    """TOÀN BỘ chunk của một dự án — nguyên liệu dựng chỉ mục BM25.
+
+    `load_only` chứ không `select(DocChunk)`: hàm này đọc CẢ BẢNG của dự án chứ
+    không phải 5 dòng, mà cột `embedding` là 768 float mỗi dòng. Kéo nó về rồi
+    vứt đi là vài chục MB đi qua mạng cho mỗi lần dựng chỉ mục.
+
+    Hệ quả cố ý: `chunk.embedding` của object trả về KHÔNG đọc được (session đã
+    đóng, thuộc tính hoãn tải sẽ ném). Ai cần vector thì gọi `search`.
+    """
+    with get_session() as session:
+        rows = session.exec(
+            select(DocChunk, SourceDocument)
+            .join(SourceDocument, SourceDocument.document_id == DocChunk.document_id)  # type: ignore[arg-type]
+            .where(DocChunk.project_id == project_id)
+            .options(
+                load_only(
+                    DocChunk.content,  # type: ignore[arg-type]
+                    DocChunk.as_of_date,  # type: ignore[arg-type]
+                    DocChunk.chunk_metadata,  # type: ignore[arg-type]
+                ),
+                load_only(SourceDocument.file_name),  # type: ignore[arg-type]
+            )
+            .order_by(DocChunk.document_id, DocChunk.chunk_index)  # type: ignore[arg-type]
+        ).all()
+        return [(chunk, document) for chunk, document in rows]
 
 
 def search(

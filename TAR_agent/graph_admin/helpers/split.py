@@ -9,7 +9,9 @@ from functools import lru_cache
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from TAR_agent.utils.config import CHUNKING
+from TAR_agent.utils.config import load_config
+
+CHUNKING = load_config()["chunking"]
 
 
 @lru_cache(maxsize=1)

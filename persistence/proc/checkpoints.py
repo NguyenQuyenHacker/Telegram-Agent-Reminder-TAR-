@@ -1,9 +1,8 @@
 """Dọn bảng checkpoint của LangGraph.
 
 AsyncPostgresSaver ghi MỘT checkpoint cho mỗi bước của mỗi lượt chạy graph và
-không bao giờ tự xoá. Bot chỉ phục vụ một chat_id nên tất cả dồn vào một thread:
-cắt lịch sử trong state (xem ReminderAgent._recent_history) chỉ làm mỗi
-checkpoint nhẹ đi, chứ không giảm SỐ checkpoint.
+không bao giờ tự xoá. Cắt lịch sử trong state chỉ làm mỗi checkpoint nhẹ đi,
+chứ không giảm SỐ checkpoint.
 
 Chỉ xoá bản ghi cũ hơn N ngày, và luôn giữ lại checkpoint mới nhất của mỗi
 thread — xoá nhầm cái đó là mất luôn hội thoại đang treo ở interrupt.

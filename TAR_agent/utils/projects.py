@@ -35,7 +35,21 @@ class ProjectMatch:
 
 
 async def resolve_project(name: str) -> ProjectMatch:
-    """Khớp chính xác trước, không có thì tìm lỏng.
+    """KHÔNG DÙNG Ở LUỒNG NÀO. Giữ lại làm sẵn cho nhánh admin sau này.
+
+    Luồng client xác định dự án bằng một node LLM, không bằng khớp chuỗi — xem
+    graph_client/nodes/identify_project.py. Người dùng gõ tên dự án lẫn giữa câu,
+    sai chính tả, thiếu dấu, hoặc không gõ gì cả vì lượt trước đã nói rồi; khớp
+    lỏng chịu cả ba ca sau.
+
+    Luồng admin thì chọn dự án bằng bàn phím inline (graph_admin/nodes/
+    ask_project.py), cũng không cần hàm này.
+
+    Kéo theo `proc.find_projects` và `text.ilike_pattern` cũng đang mồ côi.
+
+    ---
+
+    Khớp chính xác trước, không có thì tìm lỏng.
 
     Khớp chính xác đi qua `name_uuid` nên "📱 App Trưởng thôn" và
     "2/ app trưởng thôn" đều rơi về đúng một dòng mà không cần LIKE.

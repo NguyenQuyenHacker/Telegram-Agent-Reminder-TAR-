@@ -15,7 +15,7 @@ import pytest
 
 from app.telegram import keyboard
 from app.telegram.download import UploadRejected, download_document, sweep_stale_uploads
-from app.telegram.render import render
+from app.telegram.render import parse_mode_of, render
 
 
 class TestRender:
@@ -100,20 +100,23 @@ class TestRender:
         text = render({"kind": "ingest_failed", "data": {"reason": "loi_moi_toanh"}})
         assert "loi_moi_toanh" in text, "Phải lộ mã lỗi để còn tra được"
 
-    def test_ingest_updated_neu_ro_so_doan_da_thay(self):
-        text = render(
-            {
-                "kind": "ingest_updated",
-                "data": {
-                    "file_name": "T6.xlsx",
-                    "project_name": "BTC",
-                    "chunk_count": 20,
-                    "replaced_chunk_count": 16,
-                    "as_of_date": "2026-06-30",
-                },
-            }
-        )
-        assert "20" in text and "16" in text
+    def test_bao_nap_xong_chi_mot_cau_ten_file_va_ten_du_an(self):
+        """Admin chỉ cần biết file nào đã vào dự án nào. Số đoạn, số dòng, ánh
+        xạ cột là số liệu chẩn đoán — chúng ở lại trong log, không ở Telegram."""
+        data = {
+            "file_name": "T6.xlsx",
+            "project_name": "BTC",
+            "chunk_count": 20,
+            "replaced_chunk_count": 16,
+            "row_count": 65,
+            "column_map": {"KPI": "cong_viec=HANG MUC"},
+            "as_of_date": "2026-06-30",
+        }
+        for kind in ("ingest_done", "ingest_updated"):
+            text = render({"kind": kind, "data": data})
+            assert "T6.xlsx" in text and "BTC" in text
+            assert "\n" not in text, "Đúng một câu, không kèm dòng chẩn đoán nào"
+            assert "20" not in text and "65" not in text
 
     def test_ten_file_co_ky_tu_HTML_van_di_qua_nguyen_ven(self):
         """sender.py gửi text thuần (parse_mode=None). Nếu ai đó bật HTML mà
@@ -131,6 +134,83 @@ class TestRender:
             }
         )
         assert "<b>bao&cao</b>.xlsx" in text
+
+
+def _answer(text: str, project_name: str | None = "Bo_Tai_Chinh") -> str:
+    return render(
+        {"kind": "answer", "data": {"text": text, "project_name": project_name}}
+    )
+
+
+class TestClientAnswer:
+    """Câu trả lời client là tin nhắn người dùng đọc nhiều nhất, và là kind DUY
+    NHẤT gửi bằng HTML — sai escape ở đây là Telegram trả 400, tin nhắn mất luôn.
+    """
+
+    def test_chi_kind_answer_gui_HTML(self):
+        assert parse_mode_of({"kind": "answer", "data": {}}) == "HTML"
+        assert parse_mode_of({"kind": "ingest_done", "data": {}}) is None
+        assert parse_mode_of({"kind": "kind_la", "data": {}}) is None
+
+    def test_ten_du_an_thanh_tieu_de_va_khong_lap_lai_trong_than_bai(self):
+        text = _answer("Dự án Bo_Tai_Chinh: hạng mục HM3 đã xong.")
+        assert text.startswith("<b>📁 Bo_Tai_Chinh</b>")
+        assert text.count("Bo_Tai_Chinh") == 1, "Tiêu đề nói rồi, thân bài đừng nhắc lại"
+        assert "Hạng mục HM3 đã xong." in text
+
+    def test_mot_nguon_thi_gop_ve_mot_dong_cuoi(self):
+        text = _answer(
+            "Giai đoạn I đã xong [BTC.xlsx · 2026-08-13]. "
+            "Giai đoạn II chưa khởi công [BTC.xlsx · 2026-08-13]."
+        )
+        assert "[BTC.xlsx · 2026-08-13]" not in text, "Dẫn nguồn phải rời khỏi thân bài"
+        assert text.count("BTC.xlsx") == 1
+        assert text.endswith("<i>📄 Nguồn: BTC.xlsx · 13/08/2026</i>"), "Ngày kiểu Việt"
+
+    def test_nhieu_nguon_thi_giu_so_de_con_truy_duoc_y_nao_cua_file_nao(self):
+        text = _answer("Xong 40% [A.xlsx · 2026-08-13]. Chưa khởi công [B.xlsx · 2026-06-30].")
+        assert "[1]" in text and "[2]" in text
+        assert "[1] A.xlsx · 13/08/2026" in text
+        assert "[2] B.xlsx · 30/06/2026" in text
+
+    def test_gach_dau_dong_dong_nhat_va_tach_khoi_cau_dan(self):
+        text = _answer("Đang làm các việc sau:\n- Việc một\n* Việc hai")
+        assert "• Việc một\n• Việc hai" in text
+        assert "sau:\n\n• Việc một" in text, "Danh sách phải có một dòng thở phía trên"
+
+    def test_ky_tu_HTML_trong_cau_tra_loi_phai_duoc_escape(self):
+        """Người dùng gõ '<' hay tên file có '&' — Telegram parse HTML và trả 400."""
+        text = _answer("So sánh a < b & c > d [bao&cao<1>.xlsx · 2026-08-13].")
+        assert "a &lt; b &amp; c &gt; d" in text
+        assert "bao&amp;cao&lt;1&gt;.xlsx" in text
+
+    def test_khong_co_du_an_thi_khong_co_tieu_de(self):
+        """Lượt kết thúc sớm (chưa chốt được dự án) vẫn phải gửi được."""
+        text = _answer("Bạn muốn hỏi về dự án nào?", project_name=None)
+        assert text == "Bạn muốn hỏi về dự án nào?"
+
+    def test_cau_tra_loi_qua_dai_bi_cat_va_van_du_cho_cho_tieu_de_lan_nguon(self):
+        text = _answer("x" * 9000 + " [A.xlsx · 2026-08-13]")
+        assert len(text) < 4096, "Quá 4096 là Telegram trả 400, tin nhắn mất luôn"
+        assert "đã cắt bớt" in text
+        assert text.endswith("</i>"), "Cắt xong vẫn phải còn dòng nguồn nguyên vẹn"
+
+    def test_khong_co_chu_nao_thi_van_noi_duoc_mot_cau(self):
+        assert _answer("   ").strip()
+
+    def test_markdown_model_lo_go_khong_duoc_hien_nguyen_dau_sao(self):
+        """compose.md cấm markdown, nhưng prompt là lời dặn chứ không phải ràng
+        buộc — và tin nhắn gửi bằng HTML nên `**` nằm nguyên trên màn hình."""
+        text = _answer("**GIAI ĐOẠN I**\n- **Xin chủ trương**: 30T VNĐ.\n### Tiêu đề")
+        assert "*" not in text and "#" not in text
+        assert "<b>GIAI ĐOẠN I</b>" in text
+        assert "<b>Xin chủ trương</b>: 30T VNĐ." in text
+        assert "Tiêu đề" in text
+
+    def test_dau_gach_duoi_trong_ten_du_an_khong_bi_coi_la_markdown(self):
+        """Tên dự án kiểu Bo_tai_chinh đầy gạch dưới — gỡ nhầm là sai tên."""
+        text = _answer("Dự án Bo_tai_chinh_v2 đang chạy.", project_name=None)
+        assert "Bo_tai_chinh_v2" in text
 
 
 class TestKeyboard:
@@ -181,7 +261,6 @@ class TestKeyboard:
         assert "7" in markup.inline_keyboard[0][0].text
 
 
-# ─────────────────────── download.py ───────────────────────
 
 
 @dataclass

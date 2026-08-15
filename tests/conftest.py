@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-# ─────────────────────────── File mẫu ───────────────────────────
 
 
 @pytest.fixture
@@ -70,7 +69,6 @@ def empty_xlsx_file(tmp_path: Path) -> Path:
     return path
 
 
-# ─────────────────────────── Kho giả ───────────────────────────
 
 
 @dataclass
@@ -98,6 +96,7 @@ class StoredCall:
     chunk_count: int
     as_of_date: date
     uploaded_by: int
+    row_count: int = 0
 
 
 class FakeKho:
@@ -109,6 +108,10 @@ class FakeKho:
         self.projects: dict[uuid.UUID, tuple[str, int]] = {}
         self.documents: dict[tuple[uuid.UUID, str], FakeDocument] = {}
         self.embed_calls = 0
+        self.extract_calls = 0
+        # Thứ node `extract` giả sẽ trả về. Test nào cần kiểm phần ghi dòng thì
+        # gán vào đây trước khi chạy lượt nạp.
+        self.extract_rows: list = []
         self.save_calls: list[StoredCall] = []
 
     # --- dựng dữ liệu cho test ---
@@ -166,6 +169,22 @@ class FakeKho:
         self.embed_calls += 1
         return [[0.1] * 768 for _ in texts]
 
+    async def extract(self, _state) -> dict:
+        """Thay node `extract`. KHÔNG gọi Gemini.
+
+        Đếm lượt gọi cùng lý do như `embed_calls`: `extract` chạy sau cả hai
+        điểm dừng, nên "admin bấm Huỷ mà vẫn tốn một lượt LLM" là đúng loại lỗi
+        không có triệu chứng nào ngoài hoá đơn cuối tháng.
+        """
+        self.extract_calls += 1
+        return {
+            "rows": list(self.extract_rows),
+            "rows_rejected": [],
+            "rows_rejected_count": 0,
+            "column_map": {},
+            "extract_error": None,
+        }
+
     def save(self, **kwargs):
         from TAR_agent.graph_admin.helpers.writer import StoredDocument
         from TAR_agent.utils.text import document_uuid
@@ -175,6 +194,7 @@ class FakeKho:
         old = self.documents.get(key)
         replaced = old.chunk_count if old else 0
 
+        rows = kwargs.get("rows") or []
         self.save_calls.append(
             StoredCall(
                 project_id=kwargs["project_id"],
@@ -183,6 +203,7 @@ class FakeKho:
                 chunk_count=len(chunks),
                 as_of_date=kwargs["as_of_date"],
                 uploaded_by=kwargs["uploaded_by"],
+                row_count=len(rows),
             )
         )
         doc_id = document_uuid(kwargs["project_id"], kwargs["file_name"])
@@ -194,7 +215,7 @@ class FakeKho:
             chunk_count=len(chunks),
             as_of_date=kwargs["as_of_date"],
         )
-        return StoredDocument(doc_id, len(chunks), replaced)
+        return StoredDocument(doc_id, len(chunks), replaced, len(rows), 0)
 
 
 @pytest.fixture
@@ -214,6 +235,7 @@ def kho(monkeypatch) -> FakeKho:
     ask_project_node = import_module("TAR_agent.graph_admin.nodes.ask_project")
     handle_text_node = import_module("TAR_agent.graph_admin.nodes.handle_text")
     store_node = import_module("TAR_agent.graph_admin.nodes.store")
+    extract_node = import_module("TAR_agent.graph_admin.nodes.extract")
     writer = import_module("TAR_agent.graph_admin.helpers.writer")
     doc_proc = import_module("persistence.proc.documents")
 
@@ -224,6 +246,12 @@ def kho(monkeypatch) -> FakeKho:
     monkeypatch.setattr(doc_proc, "find_by_name", fake.find_by_name)
     monkeypatch.setattr(store_node, "embed_documents", fake.embed_documents)
     monkeypatch.setattr(writer, "save", fake.save)
+    # Vá trên LỚP, không trên instance: `Extract()` được dựng lúc build graph
+    # (fixture `graph`), mà thứ tự hai fixture phụ thuộc thứ tự tham số của
+    # từng test — vá lớp thì đúng dù chúng chạy theo thứ tự nào.
+    monkeypatch.setattr(
+        extract_node.Extract, "__call__", lambda _self, state: fake.extract(state)
+    )
     return fake
 
 
@@ -237,7 +265,6 @@ def graph():
     return build_admin_graph(MemorySaver())
 
 
-# ─────────────────────── Giả lập tầng Telegram ───────────────────────
 
 
 @pytest.fixture

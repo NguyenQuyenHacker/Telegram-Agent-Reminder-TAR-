@@ -34,8 +34,17 @@ def route(state: AdminState) -> dict:
         "documents": None,
         "chunks": None,
         "as_of_date": None,
+        # Ba khoá của `extract` phải dọn ở đây như mọi khoá khác: một lượt nạp
+        # trích hỏng mà không dọn thì `extract_error` sống tiếp sang MỌI lượt
+        # sau, và admin đọc "trích dữ liệu hỏng" ở những file chưa từng hỏng.
+        "rows": [],
+        "rows_rejected": [],
+        "rows_rejected_count": 0,
+        "column_map": {},
+        "extract_error": None,
         "document_id": None,
         "chunk_count": 0,
+        "row_count": 0,
     }
 
 

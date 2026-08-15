@@ -1,6 +1,6 @@
 """Cấu hình và factory dựng model. Một chỗ duy nhất.
 
-    from TAR_agent.utils.config import settings, AGENT, admin_model, embedding_model
+    from TAR_agent.utils.config import settings, load_config, create_google_genai
 
 Bí mật đọc từ .env, tham số hành vi đọc từ models.yaml. File này là chỗ duy
 nhất chạm cả hai, và là chỗ duy nhất dựng LLM/embedding.
@@ -68,17 +68,19 @@ def now_local() -> datetime:
     return datetime.now(TZ)
 
 
-# ──────────────────────────── Tham số ────────────────────────────
-with (Path(__file__).with_name("models.yaml")).open(encoding="utf-8") as f:
-    _YAML = yaml.safe_load(f)
-
-MODELS = _YAML["models"]  # splat thẳng vào ChatGoogleGenerativeAI(**khối)
-EMBEDDING = _YAML["embedding"]
-AGENT = _YAML["agent"]
-CHUNKING = _YAML["chunking"]
+_CONFIG_PATH = Path(__file__).with_name("models.yaml")
 
 
-# ──────────────────────────── Model ────────────────────────────
+@lru_cache(maxsize=1)
+def load_config() -> dict[str, Any]:
+    """Nguyên nội dung models.yaml. Đọc đĩa một lần, sau đó lấy từ cache.
+
+    Trả về CHÍNH dict trong cache chứ không phải bản sao: sửa nó là sửa cho cả
+    tiến trình, vĩnh viễn, không có gì báo. Nơi gọi chỉ đọc.
+    """
+    return yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
 # Placeholder chứ không phải chuỗi "{biến}": prompt chứa dấu { } không bị hiểu
 # nhầm là biến template.
 _PROMPT = ChatPromptTemplate.from_messages(
@@ -86,12 +88,24 @@ _PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def _chat_model(
-    params: dict[str, Any],
+def create_google_genai(
+    chat_config: dict[str, Any],
+    *,
     tools: list[BaseTool] | None = None,
     output_schema: type[BaseModel] | None = None,
 ) -> Runnable:
-    model = ChatGoogleGenerativeAI(google_api_key=settings.google_api_key, **params)
+    """Một khối `models:` trong yaml -> Runnable nhận
+    `{"system": [SystemMessage(...)], "messages": [...]}`.
+
+    Nhận thẳng KHỐI CẤU HÌNH chứ không nhận tên khối: luồng client có sáu chỗ
+    gọi LLM, mỗi chỗ một khối, và nơi dựng graph đã cầm sẵn `config["models"]`
+    rồi. Truyền tên là thêm một lớp tra bảng chỉ để tra ngược lại đúng cái dict
+    vừa có trong tay.
+
+    `tools` và `output_schema` là keyword-only: `create_google_genai(cfg, X)`
+    không đọc ra được X là tool hay schema.
+    """
+    model = ChatGoogleGenerativeAI(google_api_key=settings.google_api_key, **chat_config)
     if tools:
         model = model.bind_tools(tools)
     if output_schema:
@@ -99,23 +113,14 @@ def _chat_model(
     return _PROMPT | model
 
 
-def admin_model(tools=None, output_schema=None) -> Runnable:
-    """Runnable nhận {"system": [SystemMessage(...)], "messages": [...]}."""
-    return _chat_model(MODELS["admin"], tools, output_schema)
-
-
-def client_model(tools=None, output_schema=None) -> Runnable:
-    return _chat_model(MODELS["client"], tools, output_schema)
-
-
 @lru_cache(maxsize=1)
 def embedding_model() -> GoogleGenerativeAIEmbeddings:
     return GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING["model"], google_api_key=settings.google_api_key
+        model=load_config()["embedding"]["model"],
+        google_api_key=settings.google_api_key,
     )
 
 
-# ──────────────────────────── Prompt ────────────────────────────
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 
 
@@ -133,15 +138,11 @@ def load_prompt(name: str, **variables: str) -> str:
 
 
 __all__ = [
-    "AGENT",
-    "CHUNKING",
-    "EMBEDDING",
     "EMBEDDING_DIM",
-    "MODELS",
     "TZ",
-    "admin_model",
-    "client_model",
+    "create_google_genai",
     "embedding_model",
+    "load_config",
     "load_prompt",
     "now_local",
     "settings",

@@ -5,20 +5,82 @@
 #
 # CHỈ để tham số không nhạy cảm ở đây — file này lên git, khoá thì không.
 # Prompt cũng không khai ở đây: prompt là file .md trong prompts/.
+#
+# `gemini-2.5-flash-lite` KHÔNG dùng được nữa: nó vẫn hiện trong list_models
+# nhưng generateContent trả 404 "no longer available to new users". Ba khối lite
+# dưới đây vì thế chạy `gemini-3.5-flash-lite` — đã thử gọi thật, có trả lời.
+# Ghim số bản chứ không dùng bí danh `gemini-flash-lite-latest`: bí danh đổi
+# model dưới chân mình mà không có gì báo, và chất lượng chọn dự án thì chỉ lộ
+# ra khi bot trả lời nhầm dự án.
 
 models:
   # Bot admin: liệt kê / xoá / thống kê. Dứt khoát, không cần sáng tạo.
+  #
+  # CHƯA AI ĐỌC khối này: graph_admin đi bằng router + interrupt, chưa có vòng
+  # ReAct nào nên chưa gọi LLM (xem graph_admin/tools/__init__.py — ADMIN_TOOLS
+  # còn rỗng). Giữ lại vì nó là tham số đã chốt cho lúc dựng agent admin.
   admin:
     model: gemini-2.5-flash
     temperature: 0.0
     timeout: 30
     max_retries: 2
 
-  # Bot client: hỏi đáp, phải tổng hợp nhiều đoạn nên cho thêm thời gian.
+  # Bot client: node `agent` — quyết định gọi tool nào với truy vấn gì.
   client:
     model: gemini-2.5-flash
     temperature: 0.3
     timeout: 45
+    max_retries: 2
+
+  # Chọn dự án + tách câu hỏi. Chạy ở MỌI lượt nên phải rẻ; temperature 0 vì
+  # đây là việc phân loại, sáng tạo ở đây chỉ có hại.
+  identify:
+    model: gemini-3.5-flash-lite
+    temperature: 0.0
+    timeout: 15
+    max_retries: 2
+
+  # Soạn câu trả lời cuối. Phải chép số nguyên văn từ passage nên temperature
+  # gần 0, nhưng cần thời gian để tổng hợp nhiều đoạn.
+  compose:
+    model: gemini-2.5-flash
+    temperature: 0.1
+    timeout: 45
+    max_retries: 2
+
+  # Chấm cả lô passage trong MỘT lượt (xem docs/plan-client-v2.md phần 2 mục 6).
+  grade:
+    model: gemini-3.5-flash-lite
+    temperature: 0.0
+    timeout: 20
+    max_retries: 2
+
+  # Viết lại truy vấn khi tra hụt. Đây là chỗ DUY NHẤT cần chút sáng tạo —
+  # temperature 0 thì nó viết lại y hệt câu cũ và vòng tự sửa thành vô nghĩa.
+  rewrite:
+    model: gemini-3.5-flash-lite
+    temperature: 0.3
+    timeout: 15
+    max_retries: 2
+
+  # MỘT khối cho CẢ HAI lượt extract: ánh xạ header .xlsx, và rút dòng từ .txt.
+  # Chúng khác nhau ở prompt và ở output_schema — KHÔNG khác nhau ở model. Tách
+  # làm hai khối chỉ để chênh đúng một con số timeout là tạo ra hai chỗ phải
+  # sửa mỗi lần đổi model, và chắc chắn có lần chỉ sửa một.
+  extract:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 45          # lấy theo lượt nặng hơn (.txt theo lô chunk)
+    max_retries: 2
+
+  # Sinh và sửa SQL. Viết SQL không cần sáng tạo — khác hẳn `rewrite`.
+  # Khối RIÊNG vì nó thuộc graph CLIENT: nằm trong đường người dùng đang ngồi
+  # chờ, nên timeout của nó sẽ đi theo hướng ngược với extract (nạp file thì
+  # chờ được, hỏi bot thì không).
+  sql:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 30
     max_retries: 2
 
 embedding:
@@ -31,12 +93,52 @@ embedding:
   # nguồn duy nhất là EMBEDDING_DIM ở persistence/models/doc_chunk.py.
   # Khai hai nơi là sớm muộn lệch nhau mà không có lỗi nào nổ.
 
+# Tầng truy xuất của bot client. Không có khoá nào ở đây là tham số của LLM.
+retrieval:
+  # Số đoạn mỗi nhánh lấy về TRƯỚC khi hợp nhất. Lấy dư rồi cắt còn `k`: RRF
+  # chỉ xếp hạng lại được những gì hai nhánh đã đưa lên bàn.
+  bm25_k: 5
+  vector_k: 5
+  # [bm25, vector]. Nghiêng về vector vì câu hỏi tiếng Việt hay diễn đạt khác
+  # hẳn chữ trong file; BM25 giữ phần mã hiệu và tên riêng gõ đúng nguyên văn.
+  weights: [0.4, 0.6]
+  # Số đoạn thực sự đưa cho LLM sau khi hợp nhất.
+  k: 5
+  # Cosine distance. Trên ngưỡng này coi như lạc đề — thà trả rỗng còn hơn đưa
+  # ba đoạn không liên quan cho model tán.
+  max_distance: 0.6
+  # Số lượt retrieve trong subgraph (lần đầu + tối đa 1 lần viết lại truy vấn).
+  max_attempts: 2
+  # Số dự án giữ chỉ mục BM25 trong RAM. Xem docs/plan-client-v2.md phần 2 mục 5.
+  cache_projects: 8
+  # Số lượt sinh/sửa SQL trong subgraph query_data (lần đầu + tối đa 1 lần sửa).
+  max_sql_attempts: 2
+  # Trần số dòng một câu SQL được trả về. `validate` ép LIMIT này vào câu nào
+  # thiếu — không có nó thì một `SELECT *` trên file 500 dòng nhét cả bảng vào
+  # prompt của compose.
+  sql_row_limit: 50
+
+# Trích dữ liệu có cấu trúc lúc nạp (node `extract` của graph admin).
+extraction:
+  # Số chunk .txt gộp vào MỘT lượt LLM. Lớn hơn thì rẻ hơn nhưng model bỏ sót
+  # nhiều hơn ở cuối lô.
+  batch_chunks: 8
+  # Số lượt extract chạy song song. Gemini có rate limit phía server.
+  max_concurrency: 3
+
 agent:
-  # Trần số vòng agent <-> tools, chặn vòng lặp chạy mãi.
-  max_tool_rounds: 3
+  # 3 -> 5: nhiều câu hỏi cần CẢ HAI tool (query_data lấy số, search_docs lấy
+  # phần giải thích). Ba lượt hết ngay.
+  max_tool_rounds: 5
   # Đếm SỐ MESSAGE, không phải token: một vòng tra tốn 2 message (AIMessage
   # tool_calls + ToolMessage), nên 20 ~ 5-6 lượt hỏi đáp có tra cứu.
   max_history_messages: 20
+  # Trần TỔNG số lần vào node `agent` trong một lượt, kể cả các lần quay lại từ
+  # `compose`. Chặn cặp agent ⇄ compose ping-pong mãi khi compose không bao giờ
+  # chấm "dat".
+  max_iterations: 6
+  # Số lần compose được phép đá ngược về agent để bổ sung dữ liệu.
+  max_revise: 2
 
 # Truyền thẳng vào RecursiveCharacterTextSplitter.
 chunking:

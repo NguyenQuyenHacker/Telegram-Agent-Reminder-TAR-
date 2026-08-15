@@ -21,8 +21,6 @@ CLIENT_WEBHOOK_PATH = "/webhooks/telegram/client"
 
 @dataclass(frozen=True)
 class BotRole:
-    """Một vai = một bot + đường dẫn webhook + secret của riêng nó."""
-
     name: str
     bot: Bot
     webhook_path: str

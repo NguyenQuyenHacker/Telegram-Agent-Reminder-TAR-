@@ -4,6 +4,10 @@ Mọi đường — lỗi, huỷ, trùng, thành công — đều đổ về đ�
 thúc im lặng và không đường nào bỏ sót việc xoá file tạm.
 
 Chỉ trả `kind` + dữ liệu thô; câu chữ là việc của app/telegram/render.py.
+
+Số dòng lịch công việc in ra ở MỌI lượt ghi, KỂ CẢ khi bằng 0. `extract` được
+phép trả 0 dòng mà lượt nạp vẫn tính là thành công — im lặng ở đúng chỗ đó thì
+admin tưởng đã nạp đủ, và chỉ phát hiện lúc bot trả lời sai một câu đếm.
 """
 
 import logging
@@ -65,6 +69,20 @@ def report(state: AdminState) -> dict:
                         if state.get("as_of_date")
                         else None
                     ),
+                    # Năm khoá dưới chỉ có nghĩa ở nhánh ĐÃ GHI. unchanged /
+                    # cancelled không chạy qua extract nên chúng rỗng, và nói
+                    # "ghi 0 dòng" ở một lượt không ghi gì là nói dối.
+                    "row_count": state.get("row_count", 0) if wrote else 0,
+                    "rejected_count": (
+                        state.get("rows_rejected_count", 0) if wrote else 0
+                    ),
+                    # Cắt bớt ở tầng render, không ở đây: lõi trả sự thật đầy
+                    # đủ, giới hạn 4096 ký tự là chuyện của Telegram.
+                    "rejected_reasons": (
+                        (state.get("rows_rejected") or []) if wrote else []
+                    ),
+                    "extract_error": state.get("extract_error") if wrote else None,
+                    "column_map": (state.get("column_map") or {}) if wrote else {},
                 },
             }
         return {"outbox": [event]}

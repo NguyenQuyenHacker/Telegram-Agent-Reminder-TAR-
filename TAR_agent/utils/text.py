@@ -2,13 +2,18 @@
 
 Module thuần: không I/O, không đọc cấu hình, không phụ thuộc tầng nào khác.
 
-Ba việc chính:
+Bốn việc chính:
   - `name_uuid()` sinh `project_id` ổn định từ tên dự án. Nhờ nó, "App Trưởng
     thôn" trong file xlsx và "app trưởng thôn" trong biên bản PDF rơi về ĐÚNG
     một dự án mà không cần tra DB.
-  - `document_uuid()` / `chunk_uuid()` sinh khoá chính của tài liệu và chunk,
-    cũng suy từ danh tính chứ không random.
+  - `document_uuid()` / `chunk_uuid()` / `row_uuid()` sinh khoá chính của tài
+    liệu, chunk và dòng lịch công việc — cũng suy từ danh tính chứ không random.
   - `ilike_pattern()` vô hiệu ký tự đại diện của LIKE trước khi ghép mẫu tìm kiếm.
+  - `DATE_RE` là NGUỒN DUY NHẤT của mẫu ngày tháng. Nó ở đây chứ không ở
+    `graph_client/helpers/grounding.py` vì cả hai tầng đều cần: grounding dùng
+    để loại ngày khỏi tập số phải kiểm, `graph_admin/helpers/rowcheck.py` dùng
+    để bắt ngày LLM bịa ra. Chép tay thành hai bản là chúng lệch nhau ngay sau
+    lần sửa đầu tiên, mà lệch ở đây thì không có test nào nổ.
 """
 
 import re
@@ -31,6 +36,9 @@ _LEADING_ORDINAL = re.compile(r"^\s*\d+\s*[/.)\-]\s*")
 # Ký tự escape cho ILIKE. Chuỗi người dùng gõ đi thẳng vào mẫu LIKE, không vô
 # hiệu '%' và '_' thì gõ "100%" là quét sạch bảng.
 _LIKE_ESCAPE = "\\"
+
+# Ngày tháng đủ kiểu người Việt gõ: 30/9, 30-9-2026, 2026-09-30.
+DATE_RE = re.compile(r"\b\d{1,4}\s*[/-]\s*\d{1,2}(?:\s*[/-]\s*\d{2,4})?\b")
 
 
 def ascii_lower(text: str) -> str:
@@ -73,6 +81,16 @@ def chunk_uuid(document_id: uuid.UUID, chunk_index: int) -> uuid.UUID:
     log hoặc so hai lần nạp, và không cần thêm một hằng số namespace nữa.
     """
     return uuid.uuid5(document_id, str(chunk_index))
+
+
+def row_uuid(document_id: uuid.UUID, row_index: int) -> uuid.UUID:
+    """Khoá chính của một dòng `data.cong_viec`. Cùng khuôn với `chunk_uuid`.
+
+    Tiền tố "row:" để dòng thứ 5 và chunk thứ 5 của cùng một tài liệu không ra
+    chung một UUID — hai bảng khác nhau thì trùng id không gây lỗi, nhưng soi
+    log thấy hai id giống hệt nhau là mất nửa buổi tưởng mình tìm ra bug.
+    """
+    return uuid.uuid5(document_id, f"row:{row_index}")
 
 
 def ilike_pattern(text: str) -> str:

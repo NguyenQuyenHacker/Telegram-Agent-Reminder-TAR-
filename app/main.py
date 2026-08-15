@@ -13,6 +13,7 @@ from app.telegram.bots import close_bots, set_webhooks
 from app.telegram.polling import start_dev_polling, stop_dev_polling
 from app.telegram.download import sweep_stale_uploads
 from TAR_agent.graph_admin.graph import build_admin_graph
+from TAR_agent.graph_client.graph import build_client_graph
 from TAR_agent.utils.config import settings
 
 logging.basicConfig(
@@ -69,10 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Hai graph dùng CHUNG một checkpointer — thread_id đã tách theo vai
         # (xem webhooks.thread_config) nên hai hội thoại không đụng nhau.
         app.state.admin_graph = build_admin_graph(checkpointer)
-        # graph_client CHƯA xây (retrieve/generate còn NotImplementedError).
-        # handle_client_message trả lời tạm mà không gọi graph nào — xem
-        # app/routers/webhooks.py. Bỏ dòng này khi graph_client xong.
-        app.state.client_graph = None
+        app.state.client_graph = build_client_graph(checkpointer)
 
         await asyncio.to_thread(sweep_stale_uploads)
 

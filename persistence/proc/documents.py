@@ -49,6 +49,32 @@ def list_documents(project_id: uuid.UUID | None = None) -> list[SourceDocument]:
         )
 
 
+def reset_hashes(project_id: uuid.UUID) -> int:
+    """Xoá `content_sha256` của mọi tài liệu trong một dự án. Trả số dòng đã sửa.
+
+    Đây là thứ gỡ nút cho lệnh `/reindex`. `check_file` chặn ở nhánh
+    `unchanged` khi hash TRÙNG, và nó chặn TRƯỚC `parse` — nên tài liệu nạp từ
+    thời chưa có node `extract` không có đường nào chạy qua nó: nạp lại đúng
+    file đó thì hash vẫn trùng và lượt nạp bị bỏ qua.
+
+    Xoá hash chứ không xoá tài liệu: chunk và vector cũ vẫn phục vụ được trong
+    lúc chờ admin gửi lại file. Đặt chuỗi rỗng vì cột `NOT NULL` — và chuỗi
+    rỗng không bao giờ bằng một chuỗi sha256 thật, nên lần nạp sau chắc chắn đi
+    tiếp.
+
+    Không tự tái tạo dòng từ cột `documents`: nó chỉ giữ ĐẦU RA loader (text),
+    không giữ lưới ô, nên `.xlsx` không extract lại được từ DB. Phải có file gốc.
+    """
+    with get_session() as session:
+        documents = session.exec(
+            select(SourceDocument).where(SourceDocument.project_id == project_id)
+        ).all()
+        for document in documents:
+            document.content_sha256 = ""
+        session.commit()
+        return len(documents)
+
+
 def delete_document(document_id: uuid.UUID) -> bool:
     """Xoá tài liệu. Chunk đi theo nhờ ON DELETE CASCADE."""
     with get_session() as session:

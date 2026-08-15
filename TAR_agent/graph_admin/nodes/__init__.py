@@ -11,6 +11,7 @@ chạy lại từ dòng 1 khi resume.
 
 from TAR_agent.graph_admin.nodes.ask_project import ask_project
 from TAR_agent.graph_admin.nodes.check_file import check_file
+from TAR_agent.graph_admin.nodes.extract import Extract
 from TAR_agent.graph_admin.nodes.handle_text import handle_text
 from TAR_agent.graph_admin.nodes.parse import parse
 from TAR_agent.graph_admin.nodes.report import report
@@ -18,6 +19,7 @@ from TAR_agent.graph_admin.nodes.route import choose_branch, route
 from TAR_agent.graph_admin.nodes.store import store
 
 __all__ = [
+    "Extract",
     "ask_project",
     "check_file",
     "choose_branch",

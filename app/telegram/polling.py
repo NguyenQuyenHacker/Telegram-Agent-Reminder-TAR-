@@ -18,7 +18,6 @@ from app.telegram.bots import ALL_ROLES, BotRole
 
 
 def _build_dispatcher(app: FastAPI, role: BotRole) -> Dispatcher:
-    # Cùng bảng handler mà endpoint webhook dùng: luồng xử lý y hệt production.
     handle = HANDLERS[role.name]["message"]
     handle_cb = HANDLERS[role.name]["callback"]
     dispatcher = Dispatcher()

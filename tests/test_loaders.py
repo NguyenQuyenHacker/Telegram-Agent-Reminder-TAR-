@@ -30,25 +30,24 @@ def _gop(docs) -> str:
 
 
 class TestLoadXlsx:
-    """Hành vi THẬT của UnstructuredExcelLoader(mode="elements"), đã chạy kiểm.
+    """Hành vi của loader openpyxl. `UnstructuredExcelLoader` đã bỏ hẳn.
 
-    Khác loader openpyxl tự viết trước đây ở hai điểm lớn — xem
-    TestXlsxCatNhoTheoElement bên dưới.
+    Ba test dưới đây từng khẳng định điều NGƯỢC LẠI (một sheet ra nhiều
+    Document, `text_as_html` trong metadata, dòng trống tách bảng) — đó là hành
+    vi của `mode="elements"`, và nó chính là lý do phải đổi loader: mẩu bảng
+    thứ hai không mang theo hàng tiêu đề, nên một chunk chỉ có
+    `HM3 Thi công 2026-06-20` mà không biết ngày đó là ngày bắt đầu hay kết thúc.
     """
 
     def test_ngay_thang_KHONG_thanh_serial_number(self, xlsx_file: Path):
-        """Rủi ro lớn nhất khi đổi sang thư viện này — ĐÃ KIỂM, không xảy ra.
-
-        Lo ngại ban đầu: đi qua HTML thì `01/06/2026` thành `45809` (serial
-        number của Excel) hoặc `06/30/26` tuỳ locale. Thực tế pandas giữ đúng
-        ngày. Test ở lại làm chốt chặn cho lần nâng cấp thư viện sau.
-        """
+        """`01/06/2026` phải ra `2026-06-01`, không phải `45809` (serial Excel)."""
         content = _gop(load(xlsx_file))
         assert "2026-06-01" in content
         assert "2026-06-15" in content
         assert "45809" not in content
 
     def test_so_giu_nguyen_chu_so(self, xlsx_file: Path):
+        """openpyxl trả float cho mọi ô số; `cell_text` phải cắt phần `.0`."""
         content = _gop(load(xlsx_file))
         assert "100" in content
         assert "100.0" not in content
@@ -58,60 +57,69 @@ class TestLoadXlsx:
         assert all(d.metadata.get("sheet") for d in docs)
         assert {d.metadata["sheet"] for d in docs} == {"Hạng mục", "Vướng mắc"}
 
-    def test_giu_cau_truc_bang_trong_text_as_html(self, xlsx_file: Path):
-        """page_content bị duỗi phẳng thành chuỗi cách nhau bởi dấu cách; cấu
-        trúc cột chỉ còn trong metadata. Đây là thứ để tái dựng bảng sau này."""
-        bang = [d for d in load(xlsx_file) if d.metadata.get("text_as_html")]
-        assert bang, "Phần bảng phải giữ được HTML"
-        assert "<table>" in bang[0].metadata["text_as_html"]
+    def test_MOT_sheet_ra_DUNG_MOT_document(self, xlsx_file: Path):
+        """Cắt nhỏ là việc của splitter, không phải của loader.
+
+        Loader trả nguyên một bảng markdown cho mỗi sheet; chỗ nào cắt và có
+        chồng lấn bao nhiêu do `chunking` trong models.yaml quyết định — một
+        chỗ, không phải hai.
+        """
+        docs = load(xlsx_file)
+        assert len([d for d in docs if d.metadata["sheet"] == "Hạng mục"]) == 1
+
+    def test_dong_trong_KHONG_lam_tach_bang(self, xlsx_file: Path):
+        """HM3 nằm sau một dòng trống nhưng vẫn ở cùng bảng với HM1."""
+        content = next(d for d in load(xlsx_file) if d.metadata["sheet"] == "Hạng mục")
+        assert "HM1" in content.page_content
+        assert "HM3" in content.page_content
+
+    def test_moi_dong_deu_o_duoi_hang_tieu_de(self, xlsx_file: Path):
+        """Đây là thứ `mode="elements"` làm hỏng, và là lý do đổi loader."""
+        content = next(d for d in load(xlsx_file) if d.metadata["sheet"] == "Hạng mục")
+        lines = content.page_content.splitlines()
+        header_at = next(i for i, l in enumerate(lines) if "Tên hạng mục" in l)
+        hm3_at = next(i for i, l in enumerate(lines) if "HM3" in l)
+        assert header_at < hm3_at
+
+    def test_KHONG_con_text_as_html_trong_metadata(self, xlsx_file: Path):
+        """Nó nhân bản cả bảng vào metadata của MỌI chunk rồi xuống cột JSONB."""
+        assert all("text_as_html" not in d.metadata for d in load(xlsx_file))
 
     def test_sheet_rong_khong_sinh_document(self, empty_xlsx_file: Path):
         assert load(empty_xlsx_file) == []
 
     def test_khong_khoa_file_sau_khi_doc(self, xlsx_file: Path):
         # File tạm Telegram bị xoá ở report.py ngay sau khi dùng xong — nếu
-        # loader (hay pandas/openpyxl bên dưới nó) giữ handle mở thì Windows
-        # không cho xoá và mỗi lượt nạp để lại rác.
+        # loader giữ handle mở thì Windows không cho xoá và mỗi lượt nạp để
+        # lại rác. `read_only=True` của openpyxl giữ handle tới file zip, nên
+        # đây không phải một lo ngại lý thuyết.
         load(xlsx_file)
         xlsx_file.unlink()
         assert not xlsx_file.exists()
 
 
-class TestXlsxCatNhoTheoElement:
-    """Hai thay đổi lớn so với loader openpyxl cũ. ẢNH HƯỞNG CHẤT LƯỢNG TRẢ LỜI.
+class TestReadWorkbook:
+    """Đầu ra thứ hai của cùng một lần mở workbook — thứ `extract` đọc."""
 
-    `mode="elements"` cắt mỗi sheet thành nhiều mẩu theo loại (Title, Table),
-    và một DÒNG TRỐNG giữa bảng làm nó tách bảng thành hai element. Mẩu thứ hai
-    KHÔNG mang theo hàng tiêu đề.
+    def test_cell_giu_nguyen_kieu_python(self, xlsx_file: Path):
+        from datetime import date, datetime
 
-    Hệ quả: một chunk chỉ có `HM3 Thi công 2026-06-20 ...` mà không có tên cột,
-    nên không biết `2026-06-20` là "Ngày bắt đầu" hay "Ngày hoàn thành". Đây
-    đúng là thứ loader cũ cố tình tránh bằng cách giữ hàng tiêu đề ở mọi chunk.
-    """
+        from TAR_agent.graph_admin.helpers.loaders import read_workbook
 
-    def test_mot_sheet_ra_NHIEU_document(self, xlsx_file: Path):
-        docs = load(xlsx_file)
-        cua_hang_muc = [d for d in docs if d.metadata["sheet"] == "Hạng mục"]
-        assert len(cua_hang_muc) > 1
+        sheet = read_workbook(xlsx_file)[0]
+        # Đây là toàn bộ lý do bỏ `unstructured`: ngày còn là ngày, không phải
+        # một chuỗi phải parse ngược.
+        assert any(
+            isinstance(cell, (date, datetime)) for row in sheet.rows for cell in row
+        )
 
-    def test_dong_trong_giua_bang_lam_TACH_bang(self, xlsx_file: Path):
-        """HM3 nằm sau một dòng trống nên bị tách khỏi HM1/HM2."""
-        docs = load(xlsx_file)
-        co_hm1 = [d for d in docs if "HM1" in d.page_content]
-        co_hm3 = [d for d in docs if "HM3" in d.page_content]
-        assert co_hm1 and co_hm3
-        assert co_hm1[0].page_content != co_hm3[0].page_content
+    def test_bo_qua_dong_tieu_de_bao_cao_o_tren(self, xlsx_file: Path):
+        """Dòng "BÁO CÁO TIẾN ĐỘ THÁNG 6" chiếm một ô — không phải header."""
+        from TAR_agent.graph_admin.helpers.loaders import read_workbook
 
-    @pytest.mark.xfail(
-        reason="UnstructuredExcelLoader không lặp hàng tiêu đề sang mẩu bảng "
-        "thứ hai. Chunk mồ côi mất ngữ cảnh cột -> câu trả lời dễ gán nhầm "
-        "con số vào cột khác. Cần quyết: chấp nhận, hay tự ghép tiêu đề lại.",
-        strict=True,
-    )
-    def test_mau_bang_thu_hai_VAN_co_hang_tieu_de(self, xlsx_file: Path):
-        docs = load(xlsx_file)
-        mo_coi = next(d for d in docs if "HM3" in d.page_content)
-        assert "Tên hạng mục" in mo_coi.page_content
+        sheet = read_workbook(xlsx_file)[0]
+        assert "Tên hạng mục" in sheet.header
+        assert all("BÁO CÁO" not in cell for cell in sheet.header)
 
 
 class TestLoadDispatch:

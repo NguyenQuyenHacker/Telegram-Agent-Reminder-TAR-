@@ -71,9 +71,23 @@ class AdminState(TypedDict, total=False):
     chunks: list[Document]
     as_of_date: date
 
+    # --- extract điền ---
+    # Dòng ĐÃ qua rowcheck, sẵn sàng ghi thẳng xuống data.cong_viec.
+    rows: list[Any]  # list[CheckedRow]
+    # Ghi chú cho admin: lý do từng dòng bị loại, CỘNG cảnh báo lệch so_ngay của
+    # những dòng vẫn được giữ. Vì vậy độ dài của nó KHÔNG phải số dòng bị loại.
+    rows_rejected: list[str]
+    rows_rejected_count: int
+    # Ánh xạ cột đã dùng cho mỗi sheet .xlsx. `report` in ra để admin soát —
+    # ánh xạ header hỏng thì hỏng cho CẢ sheet, và không có cách nào khác biết.
+    column_map: dict[str, str]
+    # MÃ lỗi của riêng khâu trích. Tách khỏi `error` vì nó KHÔNG huỷ lượt nạp.
+    extract_error: str | None
+
     # --- store điền ---
     document_id: uuid.UUID | None
     chunk_count: int
+    row_count: int
 
     # --- xuyên suốt ---
     # MÃ lỗi, không phải câu chữ. render.py mới dịch sang tiếng Việt.

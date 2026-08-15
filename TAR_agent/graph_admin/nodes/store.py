@@ -40,13 +40,22 @@ async def store(state: AdminState) -> dict:
             chunks=chunks,
             embeddings=embeddings,
             uploaded_by=state.get("uploaded_by", 0),
+            # Cùng MỘT transaction với chunk + vector. `extract` trả 0 dòng
+            # (trích hỏng, hoặc file không phải bảng lịch) thì vẫn ghi bình
+            # thường — tài liệu vẫn dùng được cho RAG.
+            rows=state.get("rows") or [],
         )
     except Exception:
         log.exception("Ghi DB hỏng: %s", state["base_name"])
         return {"error": "write_failed"}
 
     log.info(
-        "Đã ghi %s: %d chunk (thay %d chunk cũ)",
+        "Đã ghi %s: %d chunk (thay %d), %d dòng (thay %d)",
         state["base_name"], stored.chunk_count, stored.replaced_chunks,
+        stored.row_count, stored.replaced_rows,
     )
-    return {"document_id": stored.document_id, "chunk_count": stored.chunk_count}
+    return {
+        "document_id": stored.document_id,
+        "chunk_count": stored.chunk_count,
+        "row_count": stored.row_count,
+    }

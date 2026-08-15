@@ -437,7 +437,7 @@ class TestBayCuaTangTelegram:
         đảo thứ tự là gửi lại tin cũ cho một câu hỏi mới.
         """
         c = cfg()
-        pid = kho.add_project("Bo Tai Chinh")
+        kho.add_project("Bo Tai Chinh")
 
         out = turn(graph, c, text="/duan Bo Tai Chinh")
         assert kinds(out) == ["project_exists"]

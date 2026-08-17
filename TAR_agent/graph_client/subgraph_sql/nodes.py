@@ -27,6 +27,35 @@ _COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 
 _HAS_LIMIT = re.compile(r"\blimit\b", re.IGNORECASE)
 
+# Model từ chối sinh SQL vì bảng không có trường câu hỏi cần. Xem mục "Khi câu
+# hỏi đòi thứ bảng không có" trong prompts/client_system/gen_sql.md.
+_UNSUPPORTED = re.compile(r"^\s*KHONG_TRA_LOI_DUOC\s*:?\s*(.*)", re.IGNORECASE | re.DOTALL)
+
+# Dùng khi model phát đúng token từ chối nhưng bỏ trống phần lý do. Thà một câu
+# chung chung còn hơn để `compose` nhận chuỗi rỗng rồi tự nghĩ ra lý do.
+DEFAULT_UNSUPPORTED = (
+    "bảng lịch công việc không có trường dữ liệu mà câu hỏi này cần"
+)
+
+
+def unsupported_reason(reply: str) -> str | None:
+    """Lý do từ chối, hoặc None nếu đây là một câu SQL bình thường.
+
+    Tách khỏi `validate` CHỦ Ý: `validate` trả lời "câu này có chạy được không",
+    còn hàm này trả lời "model có chịu viết câu nào không". Gộp hai câu hỏi đó
+    vào một hàm thì lời từ chối đi vào nhánh `repair` — mà `repair` sẽ ngoan
+    ngoãn nặn ra một câu SQL, tức là đúng cái hành vi bịa số ta vừa chặn.
+
+    Nhận cả dạng thiếu dấu hai chấm: model bỏ sót một ký tự dấu câu không phải
+    lý do để cả cơ chế từ chối im lặng biến mất.
+    """
+    match = _UNSUPPORTED.match(reply or "")
+    if not match:
+        return None
+    # Gộp mọi khoảng trắng: lý do đi thẳng vào câu trả lời cho người dùng, mà
+    # model hay xuống dòng giữa chừng.
+    return " ".join(match.group(1).split()) or DEFAULT_UNSUPPORTED
+
 
 def _strip(sql: str) -> str:
     """Bỏ comment và dấu `;` cuối câu. Dùng cho phần KIỂM, không phải phần chạy."""

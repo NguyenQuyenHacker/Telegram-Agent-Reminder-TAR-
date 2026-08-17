@@ -14,8 +14,12 @@ langgraph-checkpoint-postgres==2.0.9
 # Ghim cứng bản cũ là `pip install -r` HẠ CẤP core rồi kéo theo lỗi ở
 # langchain-text-splitters. Chặn <0.4 vì 0.4 mới là bản phá tương thích.
 langchain-core>=0.3.28,<0.4
-# Kèm luôn GoogleGenerativeAIEmbeddings -> không cần thư viện embedding riêng
-langchain-google-genai==2.0.7
+# Kèm luôn GoogleGenerativeAIEmbeddings -> không cần thư viện embedding riêng.
+# 2.0.7 KHÔNG có field `thinking_budget` (thêm ở 2.1.4, xem models.yaml khối
+# client/sql/rewrite) và còn đi qua `google-generativeai` — gói đã deprecated,
+# cảnh báo FutureWarning mỗi lần import. 2.1.4 chuyển sang gọi thẳng
+# `google-ai-generativelanguage`, không còn phụ thuộc gói deprecated đó nữa.
+langchain-google-genai==2.1.4
 # EnsembleRetriever (hybrid BM25 + vector) nằm ở gói `langchain` chứ không phải
 # langchain-core. tar_env TÌNH CỜ có sẵn 0.3.30 nên máy dev chạy được mà không
 # khai — Docker build sạch sẽ nổ ImportError ngay lúc dựng graph client.

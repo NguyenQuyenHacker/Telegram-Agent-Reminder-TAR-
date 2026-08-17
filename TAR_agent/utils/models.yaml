@@ -31,57 +31,50 @@ models:
     temperature: 0.3
     timeout: 45
     max_retries: 2
+    # Vài trăm token nghĩ trước khi chọn tool — đủ cho câu hỏi cần CẢ HAI tool
+    # mà không kéo độ trễ lên đáng kể.
+    thinking_budget: 512
 
-  # Chọn dự án + tách câu hỏi. Chạy ở MỌI lượt nên phải rẻ; temperature 0 vì
-  # đây là việc phân loại, sáng tạo ở đây chỉ có hại.
   identify:
-    model: gemini-3.5-flash-lite
+    model: gemini-2.5-flash
     temperature: 0.0
     timeout: 15
     max_retries: 2
 
-  # Soạn câu trả lời cuối. Phải chép số nguyên văn từ passage nên temperature
-  # gần 0, nhưng cần thời gian để tổng hợp nhiều đoạn.
   compose:
     model: gemini-2.5-flash
     temperature: 0.1
     timeout: 45
     max_retries: 2
 
-  # Chấm cả lô passage trong MỘT lượt (xem docs/plan-client-v2.md phần 2 mục 6).
   grade:
-    model: gemini-3.5-flash-lite
+    model: gemini-2.5-flash
     temperature: 0.0
     timeout: 20
     max_retries: 2
 
-  # Viết lại truy vấn khi tra hụt. Đây là chỗ DUY NHẤT cần chút sáng tạo —
-  # temperature 0 thì nó viết lại y hệt câu cũ và vòng tự sửa thành vô nghĩa.
   rewrite:
-    model: gemini-3.5-flash-lite
+    model: gemini-2.5-flash
     temperature: 0.3
     timeout: 15
     max_retries: 2
+    # Viết lại một câu hỏi ngắn — không cần nghĩ nhiều bằng client/sql.
+    thinking_budget: 256
 
-  # MỘT khối cho CẢ HAI lượt extract: ánh xạ header .xlsx, và rút dòng từ .txt.
-  # Chúng khác nhau ở prompt và ở output_schema — KHÔNG khác nhau ở model. Tách
-  # làm hai khối chỉ để chênh đúng một con số timeout là tạo ra hai chỗ phải
-  # sửa mỗi lần đổi model, và chắc chắn có lần chỉ sửa một.
   extract:
     model: gemini-2.5-flash
     temperature: 0.0
-    timeout: 45          # lấy theo lượt nặng hơn (.txt theo lô chunk)
+    timeout: 45
     max_retries: 2
 
-  # Sinh và sửa SQL. Viết SQL không cần sáng tạo — khác hẳn `rewrite`.
-  # Khối RIÊNG vì nó thuộc graph CLIENT: nằm trong đường người dùng đang ngồi
-  # chờ, nên timeout của nó sẽ đi theo hướng ngược với extract (nạp file thì
-  # chờ được, hỏi bot thì không).
   sql:
     model: gemini-2.5-flash
     temperature: 0.0
     timeout: 30
     max_retries: 2
+    # Vài trăm token nghĩ trước khi sinh SQL — giúp với join/điều kiện nhiều
+    # bảng mà không kéo độ trễ (đường người dùng đang ngồi chờ) lên nhiều.
+    thinking_budget: 512
 
 embedding:
   # text-embedding-004 đã bị gỡ khỏi API (404).

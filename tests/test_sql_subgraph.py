@@ -18,7 +18,12 @@ from decimal import Decimal
 import pytest
 
 from TAR_agent.graph_client.subgraph_sql.graph import SqlGraph
-from TAR_agent.graph_client.subgraph_sql.nodes import to_jsonable, validate
+from TAR_agent.graph_client.subgraph_sql.nodes import (
+    DEFAULT_UNSUPPORTED,
+    to_jsonable,
+    unsupported_reason,
+    validate,
+)
 
 LIMIT = 50
 
@@ -142,6 +147,7 @@ def run(graph, question="còn bao nhiêu việc chậm"):
             {
                 "question": question, "project_id": uuid.uuid4(), "sql": "",
                 "rows": [], "columns": [], "error": None, "attempt": 0, "ok": False,
+                "unsupported": None,
             }
         )
     )
@@ -215,6 +221,110 @@ class TestVongLap:
 
         out = run(self._graph(Boom(), never))
         assert out["rows"] == []
+
+
+class TestNhanDienLoiTuChoi:
+    """`unsupported_reason` thuần Python — không LLM, không DB."""
+
+    def test_cau_SQL_thuong_khong_bi_nham_la_tu_choi(self):
+        assert unsupported_reason("SELECT count(*) FROM cong_viec") is None
+
+    def test_chuoi_rong_khong_phai_tu_choi(self):
+        """Rỗng là lỗi mạng ở `_gen_sql`, phải đi tiếp vào `validate` như cũ —
+        không được biến thành một lời từ chối tự tin gửi cho người dùng."""
+        assert unsupported_reason("") is None
+        assert unsupported_reason("   ") is None
+
+    def test_lay_duoc_ly_do(self):
+        reason = unsupported_reason(
+            "KHONG_TRA_LOI_DUOC: bảng chỉ có mốc dự kiến, không có trường trạng thái"
+        )
+        assert reason == "bảng chỉ có mốc dự kiến, không có trường trạng thái"
+
+    def test_ly_do_xuong_dong_bi_gop_lai_mot_dong(self):
+        """Lý do đi thẳng vào câu trả lời Telegram."""
+        assert unsupported_reason("KHONG_TRA_LOI_DUOC: không có\n  trường\n\ttrạng thái") == (
+            "không có trường trạng thái"
+        )
+
+    def test_thieu_dau_hai_cham_van_nhan_ra(self):
+        """Model bỏ sót một dấu câu không được làm cả cơ chế im lặng biến mất."""
+        assert unsupported_reason("KHONG_TRA_LOI_DUOC bảng không có cột đó") is not None
+
+    def test_bo_trong_ly_do_thi_co_cau_mac_dinh(self):
+        """Chuỗi rỗng đưa cho compose là mời nó tự nghĩ ra lý do."""
+        assert unsupported_reason("KHONG_TRA_LOI_DUOC:") == DEFAULT_UNSUPPORTED
+
+
+class TestDuongTuChoi:
+    """Model được phép nói "bảng không có trường này" thay vì nặn ra SQL.
+
+    Đây là chốt chặn cho lỗi đã quan sát được: hỏi "% hoàn thành", model viết
+    `COUNT(*) FILTER (WHERE ngay_ht <= CURRENT_DATE) / COUNT(*)`, Postgres tính
+    thật ra 1.54, và không lớp nào phía sau bắt được — `grounding.check` chỉ
+    kiểm con số CÓ trong nguồn hay không, mà 1.54 thì có.
+    """
+
+    def _graph(self, writer, execute):
+        builder = SqlGraph()
+        builder.sql_writer = writer
+        builder._execute = execute
+        return builder.build()
+
+    def test_tu_choi_thi_KHONG_chay_SQL_va_KHONG_sua(self):
+        writer = _FakeWriter("KHONG_TRA_LOI_DUOC: bảng không có trường trạng thái")
+
+        async def never(_state):
+            pytest.fail("từ chối rồi thì không được chạy câu lệnh nào")
+
+        out = run(self._graph(writer, never), "dự án đã hoàn thành bao nhiêu phần trăm")
+        assert out["unsupported"] == "bảng không có trường trạng thái"
+        assert out["rows"] == []
+        assert writer.calls == 1, "từ chối không được đá sang repair để nặn lại SQL"
+
+    def test_tu_choi_KHONG_di_qua_validate_thanh_rac_roi_bi_repair(self):
+        """Đi qua `validate` thì lời từ chối bị gọi là rác (không mở đầu bằng
+        SELECT), `repair` nhận nó như một lỗi cú pháp và ngoan ngoãn viết ra một
+        câu SQL — đúng cái hành vi bịa số vừa chặn xong."""
+        writer = _FakeWriter(
+            "KHONG_TRA_LOI_DUOC: không có % hoàn thành",
+            "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE ngay_ht <= CURRENT_DATE) / COUNT(*), 2) FROM cong_viec",
+        )
+
+        async def never(_state):
+            pytest.fail("không được chạy tới execute")
+
+        out = run(self._graph(writer, never))
+        assert writer.calls == 1, "lượt sinh SQL thứ hai = repair đã nuốt lời từ chối"
+        assert out["unsupported"]
+
+    def test_tu_choi_o_luot_SUA_cung_duoc_ton_trong(self):
+        """Câu đầu trượt validate vì cú pháp, model sửa lại thì mới nhận ra bảng
+        không có trường cần thiết."""
+        writer = _FakeWriter(
+            "DELETE FROM cong_viec",
+            "KHONG_TRA_LOI_DUOC: bảng không có cột phần trăm hoàn thành",
+        )
+
+        async def never(_state):
+            pytest.fail("không được chạy tới execute")
+
+        out = run(self._graph(writer, never))
+        assert out["unsupported"] == "bảng không có cột phần trăm hoàn thành"
+        assert out["rows"] == []
+
+    def test_cau_hop_le_KHONG_bi_anh_huong(self):
+        """Đường cũ phải nguyên vẹn: thêm nhánh từ chối không được làm câu hỏi
+        đếm bình thường ngừng chạy."""
+        writer = _FakeWriter("SELECT count(*) AS so_luong FROM cong_viec")
+
+        async def ok(_state):
+            return {"ok": True, "error": None, "rows": [{"so_luong": 65}],
+                    "columns": ["so_luong"]}
+
+        out = run(self._graph(writer, ok))
+        assert out["rows"] == [{"so_luong": 65}]
+        assert not out.get("unsupported")
 
 
 class TestCachLyDuAn:

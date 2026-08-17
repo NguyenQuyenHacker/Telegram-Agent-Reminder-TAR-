@@ -48,8 +48,17 @@ async def query_data(
     chưa có kết quả đầu ra / biên bản nghiệm thu" lọc bằng `ket_qua_dau_ra`
     rỗng.
 
+    Bảng là KẾ HOẠCH DỰ KIẾN: không có trạng thái, không có % hoàn thành,
+    không có ngày hoàn thành thực tế. `ngay_bd`/`ngay_ht` là mốc dự kiến, mốc
+    đã qua KHÔNG có nghĩa là việc đã xong.
+
     Trả status "empty" nghĩa là bảng không có dòng nào khớp — nói thẳng với
     người dùng, đừng gọi lại tool này với cách diễn đạt khác.
+
+    Trả status "unsupported" kèm `reason` nghĩa là câu hỏi cần một trường bảng
+    KHÔNG CÓ (ví dụ tiến độ, % hoàn thành). Đó là câu trả lời cuối cùng cho ý
+    đó — đừng hỏi lại bằng cách diễn đạt khác, và đừng chuyển sang search_docs
+    để tìm con số thay thế. Kho tài liệu cũng không có trường đó.
 
     Args:
         question: câu hỏi về số liệu, viết thành câu đầy đủ ý.
@@ -64,11 +73,23 @@ async def query_data(
             "error": None,
             "attempt": 0,
             "ok": False,
+            "unsupported": None,
         }
     )
 
     rows = result.get("rows") or []
     sql = result.get("sql") or ""
+
+    # TRƯỚC nhánh `rows` rỗng, và đó là toàn bộ điểm của nó: hai thứ này khác
+    # nhau về nghĩa. "empty" = có tra, bảng không có dòng nào khớp.
+    # "unsupported" = bảng không có TRƯỜNG để trả lời câu này, nên không có
+    # phép đếm nào là đúng cả. Gộp chúng lại thì `compose` nói "kho chưa có tài
+    # liệu nào" — một câu vừa sai vừa mời người dùng đi nạp thêm file, trong khi
+    # vấn đề là schema không có cột đó.
+    if reason := result.get("unsupported"):
+        log.info("query_data(%r) -> từ chối: %s", question, reason)
+        return {"status": "unsupported", "reason": reason}
+
     log.info(
         "query_data(%r) -> %d dòng sau %d lượt sinh SQL | %s",
         question, len(rows), result.get("attempt", 0), sql or "(không sinh được)",

@@ -18,6 +18,12 @@ from pydantic import BaseModel, Field
 
 NO_PASSAGE = 'KẾT QUẢ TRA: không có đoạn nào (status "empty").'
 
+# Nhãn của khối `status: "unsupported"`. Phải khác hẳn NO_PASSAGE về chữ, vì hai
+# thứ này dẫn tới hai câu trả lời khác nhau: "kho chưa có tài liệu" (đi nạp thêm
+# file là xong) và "dữ liệu không có trường này" (nạp bao nhiêu file cũng không
+# xong, vì bảng không có cột đó).
+UNSUPPORTED_HEAD = "KHÔNG TRA ĐƯỢC · dữ liệu không có trường mà câu hỏi cần"
+
 
 class Compose(BaseModel):
     """Câu trả lời cuối, kèm bản tự chấm của chính model vừa viết nó."""
@@ -93,6 +99,19 @@ def render_tool_results(tool_messages: list[Any]) -> str:
             # kết quả tra rồi để compose trả lời "kho không có".
             blocks.append(str(message.content))
             continue
+
+        # Lời TỪ CHỐI của query_data. Không dựng khối này thì payload không có
+        # `passages` lẫn `rows`, `blocks` rỗng, và compose rơi vào NO_PASSAGE —
+        # tức là trả lời "kho chưa có tài liệu nào nói về việc này" ngay sau khi
+        # tầng dưới vừa xác định được chính xác vì sao không trả lời được.
+        if payload.get("status") == "unsupported":
+            reason = str(payload.get("reason") or "").strip()
+            block = f"[{UNSUPPORTED_HEAD}]\n{reason}"
+            if block not in seen:
+                seen.add(block)
+                blocks.append(block)
+            continue
+
         for passage in payload.get("passages") or []:
             content = str(passage.get("content", ""))
             if not content or content in seen:

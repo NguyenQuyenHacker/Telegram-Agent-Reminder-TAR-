@@ -24,3 +24,8 @@ class SqlState(TypedDict, total=False):
     attempt: int
     # `execute` chạy xong không lỗi.
     ok: bool
+    # Model từ chối viết SQL vì bảng không có trường câu hỏi cần — mang LÝ DO,
+    # không phải cờ bool. Khác hẳn `rows` rỗng ("có tra, không dòng nào khớp")
+    # và khác `error` ("có câu SQL, nhưng nó hỏng"): đây là "câu hỏi này dữ
+    # liệu không trả lời được", và `compose` phải nói ra đúng như vậy.
+    unsupported: str | None

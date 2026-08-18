@@ -75,10 +75,34 @@ async def create_project(name: str) -> tuple[ProjectBrief, bool]:
     không một cú gõ nhầm sinh ra dự án rác đã có tài liệu nằm trong.
     """
     project, created = await asyncio.to_thread(proc.create_project, name)
+    invalidate_projects()
     return ProjectBrief(project.project_id, project.name, 0), created
 
 
+# Danh sách dự án đọc ở MỌI lượt hỏi (node `identify_project`) nhưng chỉ đổi khi
+# admin tạo dự án hoặc nạp/xoá tài liệu — tức là hiếm hơn hàng trăm lần.
+_CACHE: list[ProjectBrief] | None = None
+
+
+def invalidate_projects() -> None:
+    """Gọi sau MỌI thay đổi tới danh sách dự án hoặc số tài liệu của chúng.
+
+    Vô hiệu tường minh chứ không đặt TTL: bên GHI biết chính xác lúc nào nó
+    ghi, còn TTL thì vừa giữ dữ liệu cũ lâu hơn cần thiết vừa đọc lại sớm hơn
+    cần thiết. Cùng lý do đã ghi ở `chunks.corpus_fingerprint`.
+    """
+    global _CACHE
+    _CACHE = None
+
+
 async def list_projects() -> list[ProjectBrief]:
-    """Mọi dự án kèm số tài liệu, sắp theo tên. Dùng cho bàn phím chọn dự án."""
-    rows = await asyncio.to_thread(proc.list_projects)
-    return [ProjectBrief(p.project_id, p.name, n) for p, n in rows]
+    """Mọi dự án kèm số tài liệu, sắp theo tên. CHỈ ĐỌC — đừng sửa list trả về.
+
+    Trả về chính list trong cache chứ không phải bản sao: hai nơi gọi đều chỉ
+    đọc để dựng prompt hoặc bàn phím.
+    """
+    global _CACHE
+    if _CACHE is None:
+        rows = await asyncio.to_thread(proc.list_projects)
+        _CACHE = [ProjectBrief(p.project_id, p.name, n) for p, n in rows]
+    return _CACHE

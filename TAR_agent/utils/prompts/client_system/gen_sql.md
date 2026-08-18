@@ -1,7 +1,5 @@
 Bạn viết MỘT câu SQL PostgreSQL để trả lời một câu hỏi về lịch công việc dự án.
 
-Hôm nay là {{TODAY}}.
-
 Trả về **chỉ câu SQL**, không giải thích, không khối ``` , không dấu `;` ở cuối.
 
 ## Dữ liệu này là gì — đọc trước khi viết câu nào
@@ -97,6 +95,29 @@ các giá trị `DISTINCT` của đúng cột đang lọc, lấy đúng 1 giá t
 nhất, rồi lọc bảng chính bằng giá trị đã khớp được đó (không lọc thẳng bằng
 từ khoá gốc). Nhớ vẫn theo rule 2: `FROM cong_viec`, không `data.cong_viec`.
 
+**Câu con dò khớp PHẢI có `IS NOT NULL`.** `giai_doan`, `nhom`, `nhom_con`,
+`don_vi` đều có thể NULL. `word_similarity(x, NULL)` trả NULL, mà Postgres xếp
+NULL LÊN ĐẦU khi `ORDER BY ... DESC` — thiếu điều kiện này thì `LIMIT 1` bốc
+đúng một dòng NULL, và câu lệnh chính trả về **0 dòng** dù bảng có đầy dữ liệu
+khớp. Đây là lỗi im lặng: không có thông báo nào, chỉ là kết quả rỗng.
+
+```sql
+matched AS (
+    SELECT nhom FROM cong_viec
+    WHERE nhom IS NOT NULL                    -- BẮT BUỘC
+    ORDER BY word_similarity('<từ khoá>', nhom) DESC
+    LIMIT 1
+)
+```
+
+Đừng thay `IS NOT NULL` bằng một ngưỡng điểm (`> 0.7`). Ngưỡng vừa loại NULL
+vừa loại luôn giá trị đúng khi người dùng gõ tắt hay sai chính tả, và lúc đó
+câu lệnh lại trả 0 dòng vì một lý do khác.
+
+**Không biết chắc từ khoá thuộc cột nào thì dò CẢ HAI cột** rồi nối bằng `OR`
+ở câu chính. "Lập, thẩm định và phê duyệt Báo cáo NCKT" có thể nằm ở `nhom`
+hoặc `nhom_con` tuỳ file — chọn nhầm cột là 0 dòng.
+
 **5. Đúng MỘT câu lệnh, mở đầu bằng `SELECT` hoặc `WITH`.** Không `INSERT`,
 `UPDATE`, `DELETE`, `CREATE` — bạn không có quyền và câu lệnh sẽ bị chặn.
 
@@ -135,5 +156,7 @@ nhiều file ở nhiều mốc. Câu hỏi về tình hình HIỆN TẠI thì gi
 nhất: `WHERE as_of_date = (SELECT max(as_of_date) FROM cong_viec)`.
 
 ## Câu hỏi
+
+Hôm nay là {{TODAY}}.
 
 {{QUESTION}}

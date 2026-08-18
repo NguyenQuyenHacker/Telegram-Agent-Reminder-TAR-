@@ -26,6 +26,7 @@ from persistence.pool import get_session
 from persistence.proc import chunks as chunks_proc
 from persistence.proc import rows as rows_proc
 from TAR_agent.graph_admin.helpers.rows import CheckedRow
+from TAR_agent.utils.projects import invalidate_projects
 from TAR_agent.utils.text import chunk_uuid, document_uuid, row_uuid
 
 
@@ -152,6 +153,10 @@ def save(
         )
 
         session.commit()
+
+    # Số tài liệu của dự án vừa đổi — danh sách đang nằm trong cache của luồng
+    # hỏi đáp là cũ kể từ dòng commit ở trên.
+    invalidate_projects()
 
     return StoredDocument(
         document_id=document_id,

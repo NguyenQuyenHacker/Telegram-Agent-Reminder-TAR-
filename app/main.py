@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from app.telegram.download import sweep_stale_uploads
 from TAR_agent.graph_admin.graph import build_admin_graph
 from TAR_agent.graph_client.graph import build_client_graph
 from TAR_agent.utils.config import settings
+from persistence.pool import warm_up
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,8 +30,25 @@ def _checkpointer_dsn() -> str:
     return settings.database_url.replace("postgresql+psycopg://", "postgresql://")
 
 
+# Số thread cho `asyncio.to_thread`. Đặt theo TRẦN ĐỒNG THỜI chứ không theo số
+# nhân: việc trong các thread này là chờ mạng và chờ Postgres, không phải tính
+# toán. _CLIENT_SLOTS(4) × 2 thread mỗi lượt hỏi (tra tài liệu + chạy SQL) +
+# _INGEST_SLOTS(2) = 10, làm tròn lên cho thoáng.
+_MAX_THREADS = 16
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Mặc định của event loop là min(32, cpu_count + 4) — trên máy deploy 1 vCPU
+    # là 5 thread, 2 vCPU là 6. Thiếu thread thì hai nhánh của `retrieve` THÔI
+    # KHÔNG còn song song: chúng xếp hàng chờ thread và `retrieve` âm thầm đi từ
+    # max(nhánh A, nhánh B) về gần A + B.
+    #
+    # Đây là kiểu lỗi làm "22s ở local" thành "35s trên prod" mà không lần ra
+    # được, vì nó KHÔNG tái hiện trên máy dev (12 nhân -> 16 thread, vừa đủ).
+    executor = ThreadPoolExecutor(max_workers=_MAX_THREADS, thread_name_prefix="tar")
+    asyncio.get_running_loop().set_default_executor(executor)
+
     # POOL chứ không phải một connection đơn (from_conn_string cũ): Neon
     # (serverless) ngắt kết nối idle sau một khoảng thời gian, một connection
     # đơn sống suốt vòng đời app thì CHẾT LUÔN không tự hồi phục
@@ -72,6 +91,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.admin_graph = build_admin_graph(checkpointer)
         app.state.client_graph = build_client_graph(checkpointer)
 
+        # Pool của checkpointer đã nóng sẵn (`pool.open(wait=True)` ở trên chờ đủ
+        # min_size). Engine SQLAlchemy thì lazy, phải tự đánh thức.
+        await asyncio.to_thread(warm_up)
         await asyncio.to_thread(sweep_stale_uploads)
 
         # TẮT tạm: dọn checkpoint LangGraph lúc 3h sáng. Chưa xoá file
@@ -100,6 +122,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # connection sẽ đứt theo — nuốt để traceback này khỏi che mất lỗi thật.
         with suppress(asyncio.CancelledError):
             await pool.close()
+        # wait=False: tiến trình đang tắt, không đứng chờ một lượt tra dở dang.
+        executor.shutdown(wait=False)
 
 
 app = FastAPI(title="TAR — kho tri thức tiến độ dự án", lifespan=lifespan)

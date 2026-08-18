@@ -47,16 +47,19 @@ def corpus_fingerprint(project_id: uuid.UUID) -> tuple[int, datetime | None]:
     `max(uploaded_at)` chứ không chỉ `count`: ghi đè một tài liệu bằng bản mới
     có ĐÚNG số chunk như cũ là chuyện thường (sửa vài ô trong file xlsx), lúc
     đó riêng `count` không đổi và chỉ mục cũ sống mãi với nội dung đã lỗi thời.
+
+    MỘT câu hai subquery chứ không hai câu: hàm này chạy ở MỌI lượt hỏi, trên
+    đường người dùng đang ngồi chờ.
     """
     with get_session() as session:
-        count = session.exec(
-            select(func.count(DocChunk.chunk_id)).where(  # type: ignore[arg-type]
-                DocChunk.project_id == project_id
-            )
-        ).one()
-        latest = session.exec(
-            select(func.max(SourceDocument.uploaded_at)).where(  # type: ignore[arg-type]
-                SourceDocument.project_id == project_id
+        count, latest = session.exec(
+            select(
+                select(func.count(DocChunk.chunk_id))  # type: ignore[arg-type]
+                .where(DocChunk.project_id == project_id)
+                .scalar_subquery(),
+                select(func.max(SourceDocument.uploaded_at))  # type: ignore[arg-type]
+                .where(SourceDocument.project_id == project_id)
+                .scalar_subquery(),
             )
         ).one()
         return count, latest

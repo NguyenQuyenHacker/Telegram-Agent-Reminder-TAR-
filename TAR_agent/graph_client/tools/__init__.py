@@ -1,31 +1,19 @@
-"""Tool của agent client — CHỈ ĐỌC, không ngoại lệ.
+"""Tra cứu của bot client — CHỈ ĐỌC, không ngoại lệ.
 
-Danh sách này tách hẳn khỏi ADMIN_TOOLS và không import từ graph_admin. Gộp một
-danh sách rồi lọc lúc chạy là sớm muộn cũng lọt.
+MỘT hàm tra cứu duy nhất. Bản trước có hai tool (`search_docs`, `query_data`) và
+một model tool-calling đứng chọn giữa chúng; ba thứ hỏng không sửa được bằng
+prompt:
 
-HAI tool, hai giới hạn ngược nhau, và ranh giới giữa chúng nằm ở DOCSTRING chứ
-không ở system prompt:
+  - chọn sai tool thì cả lượt hỏi trả rỗng dù nhánh kia có sẵn câu trả lời
+  - việc chọn tốn một lượt LLM mang schema của cả hai tool
+  - nó tự viết lại truy vấn, trùng việc với `rewrite` và `repair` ở hai subgraph
 
-    search_docs   văn xuôi — "vì sao", "quy định thế nào". Trả phần LIÊN QUAN
-                  NHẤT, không bao giờ trả hết, và tự khai điều đó bằng
-                  `coverage: "partial"` trong payload.
-    query_data    số liệu — "bao nhiêu", "tổng", "liệt kê tất cả". Chạy SQL
-                  trên toàn bộ bảng nên con số nó trả về là con số đầy đủ.
-
-KHÔNG có node router chọn tool đứng trước `agent`. Đó sẽ là lượt LLM thứ ba mỗi
-lượt hỏi, và nó sẽ mâu thuẫn với chính phán đoán của `agent` — router bảo SQL,
-agent vẫn gọi RAG, giờ tin ai? Chọn tool là việc tool-calling sinh ra để làm;
-cần đúng hai thứ là docstring tốt và `max_tool_rounds` đủ rộng để gọi được cả
-hai.
-
-`list_projects` biến mất vì việc chọn dự án đã lên node `identify_project` — để
-agent tự chọn là để nó tra nhầm dự án, mà câu trả lời sai dự án trông y hệt câu
-trả lời đúng.
+`retrieve_all` chạy CẢ HAI nhánh song song và trả một payload có đủ hai bên, nên
+không còn `@tool`, không còn `ToolNode`, không còn model bind tool. Node `agent`
+của graph vẫn tên `agent` nhưng việc của nó là quyết định có tra không rồi lọc
+thứ tra được — không phải chọn nguồn.
 """
 
-from TAR_agent.graph_client.tools.query import query_data
-from TAR_agent.graph_client.tools.search import search_docs
+from TAR_agent.graph_client.tools.retrieval import retrieve_all
 
-CLIENT_TOOLS = [search_docs, query_data]
-
-__all__ = ["CLIENT_TOOLS", "query_data", "search_docs"]
+__all__ = ["retrieve_all"]

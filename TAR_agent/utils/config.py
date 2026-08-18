@@ -130,7 +130,13 @@ def _read_prompt(name: str) -> str:
 
 
 def load_prompt(name: str, **variables: str) -> str:
-    """Nạp prompts/<name>.md, thay biến `{{TÊN}}` (không phải str.format)."""
+    """Nạp prompts/<name>.md, thay biến `{{TÊN}}` (không phải str.format).
+
+    LUẬT khi viết file .md: đặt mọi `{{BIẾN}}` ở CUỐI prompt. Gemini cache ngầm
+    theo tiền tố giống nhau ĐÚNG TỪNG BYTE, nên một `{{TODAY}}` ở dòng 3 làm cả
+    9KB luật phía sau nó không bao giờ trúng cache — mỗi ngày một tiền tố mới,
+    mỗi câu hỏi một tiền tố mới.
+    """
     text = _read_prompt(name)
     for key, value in variables.items():
         text = text.replace("{{" + key + "}}", value)

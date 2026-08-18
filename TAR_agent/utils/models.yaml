@@ -6,12 +6,20 @@
 # CHỈ để tham số không nhạy cảm ở đây — file này lên git, khoá thì không.
 # Prompt cũng không khai ở đây: prompt là file .md trong prompts/.
 #
-# `gemini-2.5-flash-lite` KHÔNG dùng được nữa: nó vẫn hiện trong list_models
-# nhưng generateContent trả 404 "no longer available to new users". Ba khối lite
-# dưới đây vì thế chạy `gemini-3.5-flash-lite` — đã thử gọi thật, có trả lời.
-# Ghim số bản chứ không dùng bí danh `gemini-flash-lite-latest`: bí danh đổi
-# model dưới chân mình mà không có gì báo, và chất lượng chọn dự án thì chỉ lộ
-# ra khi bot trả lời nhầm dự án.
+# MỌI khối dưới đây đang chạy `gemini-2.5-flash`. KHÔNG có khối "lite" nào:
+# `gemini-2.5-flash-lite` bị gỡ (vẫn hiện trong list_models nhưng
+# generateContent trả 404 "no longer available to new users"), còn bản thay thế
+# `gemini-3.5-flash-lite` thì chưa A/B trên tập câu hỏi thật nên chưa hạ tier
+# khối nào. Hạ tier là lever độ trễ lớn nhất còn lại (-3 đến -5s) và cũng là
+# lever dễ làm hỏng chất lượng nhất — đo trước, đổi sau.
+#
+# Ghim số bản chứ không dùng bí danh `gemini-flash-latest`: bí danh đổi model
+# dưới chân mình mà không có gì báo, và chất lượng chọn dự án thì chỉ lộ ra khi
+# bot trả lời nhầm dự án.
+#
+# `timeout` là lever của ĐUÔI, không phải của trung vị: một lời gọi treo giữ
+# người dùng đúng bằng timeout rồi còn retry thêm hai lượt nữa. Đặt sát thời
+# gian thật của chặng cộng biên độ, không đặt cho rộng rãi.
 
 models:
   # Bot admin: liệt kê / xoá / thống kê. Dứt khoát, không cần sáng tạo.
@@ -25,26 +33,50 @@ models:
     timeout: 30
     max_retries: 2
 
-  # Bot client: node `agent` — quyết định gọi tool nào với truy vấn gì.
-  client:
-    model: gemini-2.5-flash
-    temperature: 0.3
-    timeout: 45
-    max_retries: 2
-    # Vài trăm token nghĩ trước khi chọn tool — đủ cho câu hỏi cần CẢ HAI tool
-    # mà không kéo độ trễ lên đáng kể.
-    thinking_budget: 512
-
   identify:
     model: gemini-2.5-flash
     temperature: 0.0
     timeout: 15
     max_retries: 2
+    # ~6s cho một việc đáng lẽ nhanh — nhưng phần lớn là đọc prompt 6.9KB cộng
+    # 20 message hội thoại, không phải nghĩ. Cấp vừa đủ để so tên dự án gõ sai
+    # dấu với danh sách; nhiều hơn là trả tiền cho thời gian chờ.
+    thinking_budget: 256
 
+  # Chế độ QUYẾT ĐỊNH của node `agent`: lượt này có phải đi tra không. Đọc một
+  # câu, trả một cờ — không cần nghĩ nhiều, nhưng nó nằm trên đường người dùng
+  # đang ngồi chờ nên timeout ngắn.
+  decide:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 15
+    max_retries: 2
+    thinking_budget: 256
+
+  # Chế độ CHỌN LỌC của node `agent`: đọc vài chục dòng dữ liệu cạnh câu hỏi rồi
+  # trả về chỉ số các dòng giữ lại. Đầu vào lớn nhất luồng sau `compose`, và
+  # việc đối chiếu từng dòng với phạm vi câu hỏi là chỗ đáng cho ngân sách nghĩ.
+  select:
+    model: gemini-2.5-flash
+    temperature: 0.0
+    timeout: 15
+    max_retries: 2
+    # 512 -> 256: đầu vào lớn nhưng đầu ra chỉ ~60 token (vài chỉ số + một dàn ý
+    # hai câu). Ngân sách nghĩ ở đây trả tiền cho việc đối chiếu từng dòng với
+    # phạm vi câu hỏi, không phải cho việc soạn chữ.
+    thinking_budget: 256
+
+  # KHÔNG đặt thinking_budget cho compose. Nó là cái bẫy đắt nhất trong file
+  # này: compose viết kém hơn -> `grounding.check` ép verdict thành
+  # "insufficient" -> một vòng revise -> +10s. Đổi 1.5s ở trung vị lấy 10s ở
+  # đuôi là lỗ.
+  # 45 -> 30, KHÔNG xuống nữa: đo được 8.5s cho câu trả lời liệt kê 31 dòng, mà
+  # `sql_row_limit` cho phép tới 50. Đặt sát quá thì timeout giết đúng những lời
+  # gọi đang chạy tốt, rồi retry hai lượt nữa — tệ hơn hẳn thứ nó định chữa.
   compose:
     model: gemini-2.5-flash
     temperature: 0.1
-    timeout: 45
+    timeout: 30
     max_retries: 2
 
   grade:
@@ -52,6 +84,9 @@ models:
     temperature: 0.0
     timeout: 20
     max_retries: 2
+    # Đọc 5 đoạn, trả một danh sách số và một cờ — không có gì để nghĩ, mà nó
+    # đang là ĐUÔI của nhánh tài liệu, tức là đuôi của cả node `retrieve`.
+    thinking_budget: 0
 
   rewrite:
     model: gemini-2.5-flash
@@ -70,7 +105,7 @@ models:
   sql:
     model: gemini-2.5-flash
     temperature: 0.0
-    timeout: 30
+    timeout: 15
     max_retries: 2
     # Vài trăm token nghĩ trước khi sinh SQL — giúp với join/điều kiện nhiều
     # bảng mà không kéo độ trễ (đường người dùng đang ngồi chờ) lên nhiều.
@@ -120,18 +155,24 @@ extraction:
   max_concurrency: 3
 
 agent:
-  # 3 -> 5: nhiều câu hỏi cần CẢ HAI tool (query_data lấy số, search_docs lấy
-  # phần giải thích). Ba lượt hết ngay.
-  max_tool_rounds: 5
-  # Đếm SỐ MESSAGE, không phải token: một vòng tra tốn 2 message (AIMessage
-  # tool_calls + ToolMessage), nên 20 ~ 5-6 lượt hỏi đáp có tra cứu.
+  # Số message của `chat_history` đưa cho `identify_project`. Mỗi lượt chat ghi
+  # ĐÚNG 2 message (câu hỏi + câu trả lời), nên 20 ~ 10 lượt hội thoại.
+  #
+  # Đây là chỗ DUY NHẤT còn cắt lịch sử: `messages` không đi tới model nào nữa
+  # kể từ khi node `agent` biến mất.
   max_history_messages: 20
-  # Trần TỔNG số lần vào node `agent` trong một lượt, kể cả các lần quay lại từ
-  # `compose`. Chặn cặp agent ⇄ compose ping-pong mãi khi compose không bao giờ
-  # chấm "dat".
-  max_iterations: 6
-  # Số lần compose được phép đá ngược về agent để bổ sung dữ liệu.
-  max_revise: 2
+  # Trần TỔNG số lần vào node `retrieve` trong một lượt, kể cả lần quay lại từ
+  # `compose`. Chặn cặp retrieve ⇄ compose ping-pong mãi khi compose không bao
+  # giờ chấm "dat".
+  max_iterations: 3
+  # Số lần compose được phép đá ngược để tra bổ sung.
+  #
+  # 2 -> 1: vòng thứ hai gần như luôn vô ích. Hai subgraph ĐÃ tự viết lại truy
+  # vấn / tự sửa SQL bên trong (max_attempts, max_sql_attempts), nên tới lúc
+  # `compose` chê thiếu thì cả hai nhánh đều đã cạn cách tra. Vòng revise chỉ
+  # còn giá trị ở đúng lần đầu, khi `missing` mang thông tin MỚI vào truy vấn.
+  # Vòng thứ hai trả tiền cho hai lượt LLM để nhận lại gần đúng kết quả cũ.
+  max_revise: 1
 
 # Truyền thẳng vào RecursiveCharacterTextSplitter.
 chunking:

@@ -213,16 +213,29 @@ Tinh chỉnh hành vi (đều có giá trị mặc định):
 
 ## Prompt và model
 
-Prompt nằm ở `TAR_agent/utils/prompts/`, mỗi cái một file `.md`:
+Prompt nằm ở `TAR_agent/utils/prompts/`, mỗi cái một file `.md`, đặt tên theo
+node gọi nó:
 
-| File | Dùng ở |
-|---|---|
-| `admin_system.md` | Vòng ReAct quản lý kho của bot admin |
-| `client_system.md` | Nhánh hỏi đáp của bot client |
+| File | Dùng ở | Lượt LLM mỗi câu hỏi |
+|---|---|---|
+| `client_system/identify_project.md` | Chọn dự án + tách câu hỏi | 1 |
+| `client_system/agent_decide.md` | Lượt này có cần tra kho không | 1 |
+| `client_system/gen_sql.md` | Sinh SQL, và sửa SQL khi Postgres nổ | 1–2 |
+| `client_system/grade_docs.md` | Chấm lô đoạn tra được | 1 |
+| `client_system/rewrite_query.md` | Đổi từ khoá khi tra hụt | 0–1 |
+| `client_system/agent_select.md` | Giữ lại đúng phần trả lời được câu hỏi | 1 |
+| `client_system/compose.md` | Soạn câu trả lời cuối + tự chấm | 1 |
+| `admin_system/extract_header.md` | Ánh xạ tên cột của sheet .xlsx | 1/sheet, chỉ lúc nạp |
+| `admin_system/extract_rows.md` | Trích dòng công việc từ .txt | N÷8, chỉ lúc nạp |
 
-> **Cả hai hiện CHƯA được node nào gọi.** Nhánh nạp tài liệu không dùng LLM
-> (`handle_text` chạy ba nhánh cố định), còn `graph_client` chưa xây. Chúng là
-> phần chuẩn bị sẵn cho hai việc đó.
+> `gen_sql.md` và `grade_docs.md` chạy **song song** trong cùng một lượt tra —
+> xem `graph_client/tools/retrieval.py`. Một câu hỏi bình thường tốn 6 lượt LLM,
+> trong đó 2 lượt chồng lên nhau về thời gian.
+>
+> `agent_decide.md` và `agent_select.md` là hai chế độ của cùng một node
+> (`graph_client/nodes/agent.py`): một cái đứng trước `retrieve` để câu hỏi
+> không cần tra được trả lời thẳng (lượt đó chỉ tốn 2 lượt LLM), một cái đứng
+> sau để cắt phần dữ liệu lạc đề trước khi `compose` viết.
 
 Prompt viết bằng tiếng Anh, giữ tiếng Việt ở chỗ yêu cầu bot đáp bằng tiếng Việt.
 

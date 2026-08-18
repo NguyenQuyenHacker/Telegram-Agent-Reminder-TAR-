@@ -1,6 +1,13 @@
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
+
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, Message
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Telegram tự tắt "đang gõ…" sau ~5 giây, nên phải bắn lại trước mốc đó.
+_TYPING_PERIOD = 4.0
 
 
 # Telegram chập chờn thì thử lại, nhưng không quá lâu: người dùng đang chờ tin.
@@ -30,3 +37,31 @@ async def send_message(
     return await bot.send_message(
         chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
     )
+
+
+@asynccontextmanager
+async def typing(bot: Bot, chat_id: int) -> AsyncIterator[None]:
+    """Giữ "đang gõ…" suốt lúc xử lý một lượt.
+
+    Một lượt hỏi mất hơn hai chục giây, và trong suốt hai chục giây đó màn hình
+    người dùng không có gì cả — "bot chết" và "bot đang tra" trông y hệt nhau.
+    Đây là thứ rẻ nhất phân biệt được hai chuyện đó.
+
+    NUỐT mọi lỗi: mất hiệu ứng gõ là mất một hiệu ứng, để nó ném ra là mất câu
+    trả lời. Không dùng `send_message` (có retry) — chậm một nhịp gõ thì bỏ qua
+    nhịp đó, thử lại là vô nghĩa.
+    """
+
+    async def beat() -> None:
+        while True:
+            with suppress(Exception):
+                await bot.send_chat_action(chat_id, "typing")
+            await asyncio.sleep(_TYPING_PERIOD)
+
+    task = asyncio.create_task(beat())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task

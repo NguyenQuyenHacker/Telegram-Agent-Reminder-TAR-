@@ -88,11 +88,11 @@ def _tool_text(tool_messages: list[Any]) -> str:
     Content của ToolMessage là dict đã serialize; json.loads rồi ghép lại phần
     chữ để dấu ngoặc kép và tên khoá JSON không bị đếm nhầm thành nội dung.
 
-    Đọc CẢ HAI hình dạng payload — `passages` của `search_docs` và `rows` của
-    `query_data`. Bỏ sót nhánh `rows` là hỏng theo kiểu rất khó lần: mọi con số
-    ra từ bảng đóng góp 0 vào tập số hợp lệ, nên `check` coi chúng là bịa,
-    `compose` ép verdict thành "thiếu", vòng revise quay cho tới lúc chạm trần,
-    rồi `respond` dán câu rào vào chính câu trả lời ĐÚNG của nó.
+    Đọc CẢ HAI nhánh của payload — `passages` và `rows`. Bỏ sót `rows` là hỏng
+    theo kiểu rất khó lần: mọi con số ra từ bảng đóng góp 0 vào tập số hợp lệ,
+    nên `check` coi chúng là bịa, `compose` ép verdict thành "insufficient", vòng
+    revise quay tới lúc chạm trần, rồi `respond` dán câu rào vào chính câu trả
+    lời ĐÚNG của nó.
     """
     parts: list[str] = []
     for message in tool_messages:
@@ -145,7 +145,6 @@ def check(answer: str, tool_messages: list[Any], question: str) -> str | None:
         return (
             f"Các số {', '.join(invented)} không có trong đoạn tài liệu nào, cũng "
             f"không có trong kết quả truy vấn nào. Chép lại số nguyên văn từ "
-            f"nguồn, hoặc dùng query_data để lấy con số đó — cấm tự tính, tự làm "
-            f"tròn, tự quy đổi."
+            f"nguồn — cấm tự tính, tự làm tròn, tự quy đổi."
         )
     return None

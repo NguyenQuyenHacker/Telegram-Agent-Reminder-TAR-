@@ -32,7 +32,7 @@ from app.telegram import keyboard
 from app.telegram.bots import ADMIN, CLIENT, BotRole
 from app.telegram.download import UploadRejected, download_document
 from app.telegram.render import parse_mode_of, render
-from app.telegram.sender import send_message
+from app.telegram.sender import send_message, typing
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks")
@@ -290,7 +290,10 @@ async def handle_client_message(app: FastAPI, message: Message) -> None:
         return
 
     try:
-        async with chat_lock(CLIENT, chat_id), _CLIENT_SLOTS:
+        # `typing` NGOÀI CÙNG, trước cả khoá và trần đồng thời: lúc bốn suất đã
+        # đầy thì người dùng còn chờ lâu hơn nữa, mà đó đúng là lúc cần cho họ
+        # thấy bot còn sống.
+        async with typing(CLIENT.bot, chat_id), chat_lock(CLIENT, chat_id), _CLIENT_SLOTS:
             graph = app.state.client_graph
             out = await graph.ainvoke(
                 # Vào `chat_history`, KHÔNG phải `messages`: `messages` là băng

@@ -98,7 +98,7 @@ def validate_pick(
 ) -> tuple[uuid.UUID | None, str | None]:
     """LLM đề xuất, code quyết. Trả (project_id, project_name) hoặc (None, None).
 
-    Một `project_id` bịa ra mà lọt xuống dưới thì `search_docs` tra một dự án
+    Một `project_id` bịa ra mà lọt xuống dưới thì tầng tra chạy trên một dự án
     rỗng và trả "kho không có" — nghe hợp lý, và không ai biết là sai chỗ nào.
     """
     if not pick.project_id:

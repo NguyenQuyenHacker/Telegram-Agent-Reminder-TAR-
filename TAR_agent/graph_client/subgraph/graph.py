@@ -19,6 +19,7 @@ from TAR_agent.graph_client.helpers import retriever
 from TAR_agent.graph_client.subgraph.nodes import Grade, keep_only, number_passages
 from TAR_agent.graph_client.subgraph.state import SearchState
 from TAR_agent.utils.config import create_google_genai, load_config, load_prompt
+from TAR_agent.utils.timing import timed_node
 
 log = logging.getLogger(__name__)
 
@@ -123,9 +124,9 @@ class SearchGraph:
 
     def build(self):
         builder = StateGraph(SearchState)
-        builder.add_node("retrieve", self._retrieve)
-        builder.add_node("grade", self._grade)
-        builder.add_node("rewrite", self._rewrite)
+        builder.add_node("retrieve", timed_node("docs.search", self._retrieve))
+        builder.add_node("grade", timed_node("docs.grade", self._grade))
+        builder.add_node("rewrite", timed_node("docs.rewrite", self._rewrite))
 
         builder.add_edge(START, "retrieve")
         builder.add_edge("retrieve", "grade")
@@ -133,8 +134,16 @@ class SearchGraph:
             "grade", self._after_grade, {"rewrite": "rewrite", "end": END}
         )
         builder.add_edge("rewrite", "retrieve")
-        return builder.compile()
+        # `checkpointer=False` chứ không phải bỏ trống. Bỏ trống thì subgraph
+        # THỪA KẾ checkpointer của graph cha qua config lúc chạy, và LangGraph
+        # cấm hai subgraph có checkpointer cùng chạy trong MỘT node —
+        # `MultipleSubgraphsError`. Mà `retrieve_all` làm đúng điều đó: nó gọi
+        # SEARCH_GRAPH và SQL_GRAPH song song trong node `retrieve`.
+        #
+        # Không mất gì: vòng này là một phép tính bên trong một lời gọi tra cứu,
+        # nó không có điểm dừng nào để lưu lại và không ai resume nó.
+        return builder.compile(checkpointer=False)
 
 
-# Dựng một lần lúc import. Tool `search_docs` gọi lại nó ở mọi lượt.
+# Dựng một lần lúc import. `tools/retrieval.py` gọi lại nó ở mọi lượt tra.
 SEARCH_GRAPH = SearchGraph().build()

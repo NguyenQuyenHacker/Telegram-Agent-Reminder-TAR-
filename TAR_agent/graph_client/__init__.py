@@ -1,26 +1,26 @@
 """Graph của bot client: hỏi đáp trên tài liệu đã nạp.
 
-    START → reset → identify_project → agent ⇄ tools → compose → respond → END
-                          │                               ↑          │
-                          └──────→ respond → END          └── "thieu" ┘
+    START → reset → identify_project → agent ⇄ retrieve → compose → respond → END
+                          │              │                   │
+                          │              └── không cần tra ──┴─→ respond → END
+                          └──────→ respond → END
 
-Chi tiết từng nhánh và bốn cái trần chặn vòng lặp: xem graph.py.
+`retrieve` tra CẢ HAI nguồn cùng lúc — bảng lịch công việc (SQL) và kho tài liệu
+(vector + BM25). Không có bước nào CHỌN nguồn; chọn sai là hỏng theo kiểu tệ
+nhất, im lặng trả rỗng trong khi nguồn kia đang có sẵn câu trả lời.
 
-CHỈ ĐỌC. Không node nào, không tool nào, không import nào trong package này chạm
-được tới hàm ghi kho — `graph_admin` không được import từ đây, và đó là thứ giữ
-cho ranh giới quyền là ranh giới thật chứ không phải quy ước.
+`agent` là node hai chế độ, đứng ở cả hai đầu của `retrieve`: trước khi tra nó
+quyết định lượt này có cần tra không, sau khi tra nó đọc câu hỏi cạnh dữ liệu và
+giữ lại đúng phần trả lời được. Chi tiết và bốn cái trần chặn vòng lặp: graph.py.
 
-Ba chỗ dễ sai, ghi trước để khỏi phải học lại:
+CHỈ ĐỌC. Không import nào trong package này chạm được tới hàm ghi kho —
+`graph_admin` không được import từ đây.
 
-1. Câu trả lời phải KÈM NGUỒN — tên file và mốc dữ liệu. Không có nguồn thì
-   người đọc không kiểm chứng được, và một câu bịa trông y hệt một câu đúng.
-   Cưỡng chế bằng máy ở helpers/grounding.py, không chỉ bằng prompt.
+Ba chỗ dễ sai:
 
-2. Tra không ra gì thì nói thẳng là kho không có. Cấm suy diễn từ kiến thức
-   chung của model — người dùng đang hỏi về dự án của họ, không phải hỏi
-   Wikipedia.
-
-3. `project_id` do graph quyết, không phải LLM. Trả lời đúng câu hỏi nhưng sai
-   dự án trông y hệt trả lời đúng, nên mỗi câu trả lời phải tự nêu tên dự án nó
-   đang nói tới — xem prompts/client_system/compose.md.
+1. Câu trả lời phải KÈM NGUỒN (tên file + mốc dữ liệu), cưỡng chế bằng máy ở
+   helpers/grounding.py chứ không chỉ bằng prompt.
+2. Tra không ra gì thì nói thẳng kho không có, cấm suy diễn từ kiến thức chung.
+3. `project_id` do graph quyết, không phải LLM — trả lời đúng câu hỏi nhưng sai
+   dự án trông y hệt trả lời đúng.
 """

@@ -2,6 +2,7 @@
 
     reset.py             dọn state của lượt trước
     identify_project.py  đang hỏi dự án nào — schema + kiểm tra sau LLM
+    agent.py             tra hay không, và lọc thứ tra được — schema + đánh số/cắt
     compose.py           soạn câu trả lời — schema + dựng khối passage
     respond.py           cửa ra duy nhất — dựng event
 

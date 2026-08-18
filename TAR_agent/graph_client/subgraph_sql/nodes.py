@@ -102,9 +102,9 @@ def validate(sql: str, row_limit: int) -> tuple[str | None, str]:
 def to_jsonable(value: Any) -> Any:
     """Giá trị Postgres -> thứ `json.dumps` nuốt được.
 
-    `ToolNode` serialize giá trị trả về của tool thành JSON, nên một `date`
-    lọt qua đây là cả lượt hỏi chết ở tầng ngoài — xa chỗ gây ra, sau khi đã
-    tốn hết tiền của lượt đó.
+    Node `retrieve` serialize payload thành JSON để nhét vào `messages`, nên một
+    `date` lọt qua đây là cả lượt hỏi chết ở tầng ngoài — xa chỗ gây ra, sau khi
+    đã tốn hết tiền của lượt đó.
 
     `Decimal` -> `float`: `SUM()` trên cột INTEGER vẫn ra Decimal.
     """

@@ -21,12 +21,19 @@ import asyncio
 import json
 import os
 import uuid
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import ToolMessage
 
 from TAR_agent.graph_client.graph import ClientGraph
+from TAR_agent.graph_client.nodes.agent import (
+    number_evidence,
+    count_evidence,
+    filter_evidence,
+)
 from TAR_agent.graph_client.nodes.compose import (
     NO_PASSAGE,
     UNSUPPORTED_HEAD,
@@ -44,6 +51,10 @@ def _route(state: dict) -> str:
     return ClientGraph._after_identify(None, state)
 
 
+def _route_agent(state: dict) -> str:
+    return ClientGraph._after_agent(None, state)
+
+
 class TestSauIdentifyProject:
     def test_co_du_an_va_co_cau_hoi_thi_di_tra(self):
         assert _route({"project_id": _PROJECT_ID, "reply": None}) == "agent"
@@ -53,12 +64,12 @@ class TestSauIdentifyProject:
 
     def test_chot_du_an_nhung_chua_co_cau_hoi_thi_KHONG_tra(self):
         """Luật 8. Nhìn mỗi `project_id` là đá thẳng câu "cho mình hỏi về X đi"
-        vào vòng tra cứu: agent phải tự bịa truy vấn, rồi compose đổ cả dự án ra
-        màn hình — hai chục giây cho một câu không ai hỏi."""
+        vào vòng tra cứu: hai nhánh tra chạy trên một câu không có ý hỏi nào, rồi
+        compose đổ cả dự án ra màn hình — hai chục giây cho một câu không ai hỏi."""
         state = {"project_id": _PROJECT_ID, "reply": ask_what_about("Bo_tai_chinh")}
         assert _route(state) == "respond"
 
-    def test_loi_LLM_thi_ra_thang_chu_khong_vao_agent(self):
+    def test_loi_LLM_thi_ra_thang_chu_khong_di_tra(self):
         assert _route({"project_id": None, "reply": None, "error": "llm_failed"}) == "respond"
 
 
@@ -91,8 +102,210 @@ class TestNhanhHoiLai:
 
 
 def _tool_message(payload: dict) -> ToolMessage:
-    """Đúng hình dạng `ToolNode` sinh ra: content là JSON đã serialize."""
+    """Đúng hình dạng `_retrieve` sinh ra: content là JSON đã serialize."""
     return ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id="x")
+
+
+class _Doc(SimpleNamespace):
+    """Đủ mặt thuộc tính mà `_search_docs` đọc, không hơn."""
+
+
+def _doc(content: str) -> _Doc:
+    return _Doc(
+        content=content,
+        file_name="TiendoT8.xlsx",
+        as_of_date=date(2026, 8, 15),
+        heading_path="",
+    )
+
+
+def _run_retrieve_all(monkeypatch, *, table, docs) -> dict:
+    """Chạy `retrieve_all` với hai subgraph giả.
+
+    `table` nhận một dict (state trả về của SQL_GRAPH) hoặc một Exception để giả
+    cảnh nhánh đó nổ.
+    """
+    from TAR_agent.graph_client.tools import retrieval as mod
+
+    class _Fake:
+        def __init__(self, ket_qua):
+            self.ket_qua = ket_qua
+
+        async def ainvoke(self, _state):
+            if isinstance(self.ket_qua, BaseException):
+                raise self.ket_qua
+            return self.ket_qua
+
+    monkeypatch.setattr(mod, "SQL_GRAPH", _Fake(table))
+    monkeypatch.setattr(mod, "SEARCH_GRAPH", _Fake({"docs": docs, "attempt": 1}))
+    return asyncio.run(mod.retrieve_all("câu hỏi", uuid.uuid4()))
+
+
+def _payload_table(*cong_viec: str) -> dict:
+    """Payload nhánh bảng với mỗi dòng một tên công việc."""
+    return {
+        "table": "ok",
+        "status": "ok",
+        "sql": "SELECT 1",
+        "columns": ["cong_viec", "don_vi"],
+        "rows": [{"cong_viec": ten, "don_vi": "Cục CNTT"} for ten in cong_viec],
+    }
+
+
+class TestSauAgent:
+    """`_after_agent` chỉ đọc `agent_action`. Suy lại từ `messages` ở router là
+    hai chỗ cùng quyết một việc, và chúng lệch nhau ở đúng ca hiếm."""
+
+    def test_can_tra_thi_di_retrieve(self):
+        assert _route_agent({"agent_action": "retrieve", "query": "x"}) == "retrieve"
+
+    def test_tra_loi_thang_thi_ra_respond(self):
+        assert _route_agent({"agent_action": "answer", "reply": "Cảm ơn bạn"}) == "respond"
+
+    def test_chon_loc_xong_thi_sang_compose(self):
+        assert _route_agent({"agent_action": "compose", "evidence": "..."}) == "compose"
+
+    def test_thieu_agent_action_thi_MAC_DINH_di_tra(self):
+        """Ra thẳng `respond` khi không rõ là gửi một câu trả lời rỗng."""
+        assert _route_agent({}) == "retrieve"
+        assert _route_agent({"agent_action": "lung tung"}) == "retrieve"
+
+    def test_agent_action_duoc_don_dau_moi_luot(self):
+        """Giữ "compose" của lượt trước thì lượt sau LLM hỏng là router đi thẳng
+        sang compose với `evidence` của câu hỏi cũ."""
+        sach = reset({"agent_action": "compose", "evidence": "cũ", "messages": []})
+        assert sach["agent_action"] == ""
+        assert sach["evidence"] == ""
+
+
+class TestHaiSubgraphChungMotNode:
+    """Hồi quy cho `MultipleSubgraphsError`.
+
+    `retrieve_all` gọi hai subgraph SONG SONG trong node `retrieve`. Subgraph compile
+    không khai checkpointer thì lúc chạy nó THỪA KẾ checkpointer của graph cha
+    qua config, và LangGraph cấm hai subgraph có checkpointer cùng chạy trong
+    một node — cả lượt hỏi mất nhánh tài liệu, chỉ còn dòng ERROR trong log.
+
+    Khai `checkpointer=False` là thứ chặn điều đó, và nó không mất gì: hai vòng
+    đó là phép tính bên trong một lời gọi tra cứu, không ai resume chúng.
+    """
+
+    def test_ca_hai_subgraph_tu_choi_checkpointer_cua_graph_cha(self):
+        from TAR_agent.graph_client.subgraph.graph import SEARCH_GRAPH
+        from TAR_agent.graph_client.subgraph_sql.graph import SQL_GRAPH
+
+        assert SEARCH_GRAPH.checkpointer is False
+        assert SQL_GRAPH.checkpointer is False
+
+
+class TestDanhMucBangChung:
+    def test_danh_so_chay_suot_qua_nhieu_luot_tra(self):
+        """Vòng revise tra thêm một lô. Đánh số lại từ đầu ở lô thứ hai thì
+        "giữ D1" không còn chỉ vào đúng một dòng nào."""
+        danh_muc = number_evidence(
+            [
+                _tool_message(_payload_table("Việc A", "Việc B")),
+                _tool_message(_payload_table("Việc C")),
+            ]
+        )
+        assert "D1. Việc A" in danh_muc
+        assert "D2. Việc B" in danh_muc
+        assert "D3. Việc C" in danh_muc
+
+    def test_doan_tai_lieu_danh_so_rieng(self):
+        danh_muc = number_evidence(
+            [
+                _tool_message(
+                    {
+                        **_payload_table("Việc A"),
+                        "passages": [
+                            {
+                                "content": "Nội dung đoạn",
+                                "file_name": "T8.xlsx",
+                                "as_of_date": "2026-08-15",
+                                "heading_path": "",
+                            }
+                        ],
+                    }
+                )
+            ]
+        )
+        assert "D1. Việc A" in danh_muc
+        assert "P1. T8.xlsx" in danh_muc
+
+    def test_khoi_tu_choi_KHONG_duoc_danh_so(self):
+        """Nó không phải dữ liệu để chọn mà là lý do vì sao không có dữ liệu —
+        và nó luôn đi tiếp tới compose, không qua tay ai."""
+        danh_muc = number_evidence(
+            [_tool_message({"table": "unsupported", "table_reason": "không có cột trạng thái"})]
+        )
+        assert UNSUPPORTED_HEAD in danh_muc
+        assert "D1" not in danh_muc and "P1" not in danh_muc
+
+    def test_count_evidence(self):
+        assert count_evidence([_tool_message(_payload_table("A", "B"))]) == (2, 0)
+        assert count_evidence([_tool_message({"table": "empty"})]) == (0, 0)
+
+
+class TestLocBangChung:
+    """Toàn bộ điểm của node `agent`: 27 dòng khớp mờ vào, đúng phần trả lời
+    được câu hỏi ra."""
+
+    def test_chi_giu_dong_duoc_chon(self):
+        giu = filter_evidence(
+            [_tool_message(_payload_table("Việc A", "Việc B", "Việc C"))],
+            keep_rows=[1, 3],
+            keep_passages=[],
+        )
+        block = render_tool_results(giu)
+        assert "Việc A" in block and "Việc C" in block
+        assert "Việc B" not in block
+
+    def test_chi_so_ngoai_khoang_thi_bo_qua_chu_khong_nem(self):
+        """Model bịa ra `D40` cho một lô 3 dòng là chuyện có thật."""
+        giu = filter_evidence(
+            [_tool_message(_payload_table("Việc A", "Việc B"))],
+            keep_rows=[2, 40, 0, -1],
+            keep_passages=[7],
+        )
+        block = render_tool_results(giu)
+        assert "Việc B" in block and "Việc A" not in block
+
+    def test_cat_xuyen_qua_nhieu_luot_tra(self):
+        giu = filter_evidence(
+            [
+                _tool_message(_payload_table("Việc A", "Việc B")),
+                _tool_message(_payload_table("Việc C")),
+            ],
+            keep_rows=[3],
+            keep_passages=[],
+        )
+        block = render_tool_results(giu)
+        assert "Việc C" in block
+        assert "Việc A" not in block and "Việc B" not in block
+
+    def test_giu_nguyen_van_chu_trong_dong_duoc_giu(self):
+        """Lọc bằng CHỈ SỐ chứ không bằng chữ: model không có cơ hội sửa một con
+        số hay rụng một chữ trong tên công việc."""
+        ten = "Ký hợp đồng tư vấn Khảo sát, tư vấn lập Báo cáo NCKT(02 tư vấn)"
+        giu = filter_evidence([_tool_message(_payload_table(ten))], [1], [])
+        assert ten in render_tool_results(giu)
+
+    def test_loi_tu_choi_di_qua_duoc_du_khong_ai_chon_no(self):
+        payload = {**_payload_table("Việc A"), "table": "unsupported",
+                   "table_reason": "không có cột trạng thái"}
+        giu = filter_evidence([_tool_message(payload)], keep_rows=[], keep_passages=[])
+        assert UNSUPPORTED_HEAD in render_tool_results(giu)
+
+    def test_message_bi_loc_sach_thi_bo_han(self):
+        """Payload rỗng đi tới `render_tool_results` chỉ tạo một khối trắng."""
+        assert filter_evidence([_tool_message(_payload_table("Việc A"))], [], []) == []
+
+    def test_payload_khong_doc_duoc_thi_giu_nguyen(self):
+        """Nó không được đánh số nên model không chọn được, mà vứt đi thì mất
+        một kết quả tra."""
+        la = ToolMessage(content="không phải JSON", tool_call_id="x")
+        assert filter_evidence([la], [], []) == [la]
 
 
 class TestHoiPhanTramHoanThanh:
@@ -138,28 +351,77 @@ class TestHoiPhanTramHoanThanh:
         )
         assert not re.search(r"\d", block), f"khối từ chối lọt con số: {block!r}"
 
-    def test_query_data_dich_unsupported_thanh_status_rieng(self, monkeypatch):
+    def test_tra_cuu_giu_rieng_loi_tu_choi_cua_nhanh_bang(self, monkeypatch):
         """Gộp vào `status: "empty"` là mất hẳn phần phân biệt: "không có dòng
         nào khớp" và "không có cột để trả lời" dẫn tới hai câu trả lời khác
         nhau."""
-        from TAR_agent.graph_client.tools import query as query_module
-
-        class FakeSqlGraph:
-            async def ainvoke(self, _state):
-                return {
-                    "rows": [], "sql": "", "attempt": 1,
-                    "unsupported": "bảng không có trường trạng thái",
-                }
-
-        monkeypatch.setattr(query_module, "SQL_GRAPH", FakeSqlGraph())
-        out = asyncio.run(
-            query_module.query_data.coroutine(
-                question="dự án hoàn thành bao nhiêu %", project_id=uuid.uuid4()
-            )
+        out = _run_retrieve_all(
+            monkeypatch,
+            table={"rows": [], "sql": "", "attempt": 1,
+                  "unsupported": "bảng không có trường trạng thái"},
+            docs=[],
         )
-        assert out["status"] == "unsupported"
-        assert out["reason"] == "bảng không có trường trạng thái"
+        assert out["table"] == "unsupported"
+        assert out["table_reason"] == "bảng không có trường trạng thái"
         assert "rows" not in out
+
+
+class TestTraCuuGopHaiNhanh:
+    """Hai nhánh chạy song song trong MỘT payload — mọi khẳng định ở đây đều về
+    chuyện một nhánh hỏng KHÔNG được kéo nhánh kia chết theo. Đó là toàn bộ lý
+    do gộp hai tool lại."""
+
+    def test_nhanh_bang_tu_choi_van_giu_nguyen_doan_tai_lieu(self, monkeypatch):
+        """Ca hồi quy của bản gộp: `render_tool_results` từng `continue` ngay sau
+        khối từ chối, nên payload vừa có lời từ chối vừa có đoạn tài liệu thì
+        phần tài liệu bị vứt — đúng phần đang cứu được lượt hỏi đó."""
+        out = _run_retrieve_all(
+            monkeypatch,
+            table={"rows": [], "sql": "", "attempt": 1, "unsupported": "không có cột tiến độ"},
+            docs=[_doc("Khảo sát thực tế tại các đơn vị")],
+        )
+        assert out["table"] == "unsupported"
+        assert len(out["passages"]) == 1
+        assert out["status"] == "ok", "một nhánh có dữ liệu thì chưa phải là rỗng"
+
+        block = render_tool_results([_tool_message(out)])
+        assert UNSUPPORTED_HEAD in block
+        assert "Khảo sát thực tế tại các đơn vị" in block
+
+    def test_nhanh_bang_rong_van_tra_loi_duoc_bang_tai_lieu(self, monkeypatch):
+        """Đúng ca trong log: SQL trả 0 dòng vì viết hụt một điều kiện. Bản cũ
+        dừng ở đó vì model đã chọn tool SQL; bản gộp còn nhánh tài liệu đỡ."""
+        out = _run_retrieve_all(
+            monkeypatch,
+            table={"rows": [], "sql": "SELECT 1", "attempt": 1, "unsupported": None},
+            docs=[_doc("Báo cáo kết quả khảo sát")],
+        )
+        assert out["status"] == "ok"
+        assert out["table"] == "empty"
+        assert out["docs"] == "ok"
+        assert "Báo cáo kết quả khảo sát" in render_tool_results([_tool_message(out)])
+
+    def test_ca_hai_nhanh_rong_moi_la_empty(self, monkeypatch):
+        """`_all_tools_empty` dựa vào đúng khoá này để tắt vòng tra lại. Đặt
+        "empty" khi mới một nhánh cạn là cắt mất lượt còn cứu được."""
+        out = _run_retrieve_all(
+            monkeypatch,
+            table={"rows": [], "sql": "", "attempt": 1, "unsupported": None},
+            docs=[],
+        )
+        assert out["status"] == "empty"
+
+    def test_mot_nhanh_nem_thi_nhanh_kia_van_ve(self, monkeypatch):
+        """`asyncio.gather` mặc định huỷ cả nhóm khi một task ném — mất cả lượt
+        hỏi vì một nhánh hỏng. `return_exceptions=True` là thứ chặn điều đó."""
+        out = _run_retrieve_all(
+            monkeypatch,
+            table=RuntimeError("Postgres đứt kết nối"),
+            docs=[_doc("Biên bản nghiệm thu kết quả khảo sát")],
+        )
+        assert out["table"] == "error"
+        assert out["status"] == "ok"
+        assert len(out["passages"]) == 1
 
 
 class TestPromptKhongConDayPhepTinhSai:
@@ -197,6 +459,24 @@ class TestPromptKhongConDayPhepTinhSai:
     def test_compose_cam_gan_nhan_tien_do(self):
         text = self._read("compose").lower()
         assert "% hoàn thành" in text and "tiến độ" in text
+
+    def test_compose_co_cho_dat_outline(self):
+        """`load_prompt` thay `{{OUTLINE}}` bằng chuỗi. Thiếu chỗ đặt thì dàn ý
+        của bước chọn lọc bị vứt lặng lẽ, không có lỗi nào nổ."""
+        assert "{{OUTLINE}}" in self._read("compose")
+
+    def test_agent_decide_mac_dinh_la_tra(self):
+        """Phân vân mà trả lời chay là bịa ra nội dung tài liệu."""
+        text = self._read("agent_decide")
+        assert "{{QUESTION}}" in text
+        assert "Mặc định là TRA" in text
+
+    def test_agent_select_day_giu_du_danh_sach(self):
+        """Luật dễ hỏng nhất: model thấy 27 dòng thì muốn rút gọn cho đẹp, mà
+        câu hỏi "gồm những công việc nào" thì cắt bớt là trả lời sai."""
+        text = self._read("agent_select")
+        assert "{{QUESTION}}" in text
+        assert "liệt kê tất cả" in text
 
 
 _LIVE = os.getenv("RUN_LIVE_LLM") == "1"

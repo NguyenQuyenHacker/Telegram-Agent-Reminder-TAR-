@@ -1,14 +1,12 @@
-"""Soạn câu trả lời cuối. Schema và hàm thuần.
+"""Soạn câu trả lời cuối. Schema và hàm thuần; thân node là `ClientGraph._compose`.
 
-Thân node là `ClientGraph._compose`.
+Node này nhận một khối văn bản dựng từ các ToolMessage chứ không nhận nguyên
+`messages`: cái nó cần là DỮ LIỆU TRA ĐƯỢC, không phải quá trình đi tìm.
 
-Node này KHÔNG nhận lại nguyên `messages` của vòng ReAct. Nó nhận một khối văn
-bản dựng từ các ToolMessage. Hai lý do:
-
-  - Model của `compose` không bind tool. Đưa cho nó lịch sử có phần gọi hàm là
-    đưa một hội thoại nói về những công cụ nó không có.
-  - Cái nó cần là ĐOẠN TÀI LIỆU, không phải quá trình đi tìm. Khối văn bản dựng
-    ở đây là đúng thứ đó, và dựng bằng code nên hình dạng cố định.
+Mỗi lượt tra chạy cả nhánh bảng lẫn nhánh tài liệu nên một payload có thể mang
+cùng lúc kết quả truy vấn, đoạn tài liệu, và lời từ chối của nhánh bảng. Luật
+phân xử nằm ở prompts/client_system/compose.md; `render_tool_results` chỉ lo bày
+đủ ba thứ đó thành ba khối rõ ràng.
 """
 
 import json
@@ -18,10 +16,9 @@ from pydantic import BaseModel, Field
 
 NO_PASSAGE = 'KẾT QUẢ TRA: không có đoạn nào (status "empty").'
 
-# Nhãn của khối `status: "unsupported"`. Phải khác hẳn NO_PASSAGE về chữ, vì hai
-# thứ này dẫn tới hai câu trả lời khác nhau: "kho chưa có tài liệu" (đi nạp thêm
-# file là xong) và "dữ liệu không có trường này" (nạp bao nhiêu file cũng không
-# xong, vì bảng không có cột đó).
+# Nhãn của khối `unsupported`. Phải khác hẳn NO_PASSAGE về chữ, vì hai thứ này
+# dẫn tới hai câu trả lời khác nhau: "kho chưa có tài liệu" (nạp thêm file là
+# xong) và "dữ liệu không có trường này" (nạp bao nhiêu cũng không xong).
 UNSUPPORTED_HEAD = "KHÔNG TRA ĐƯỢC · dữ liệu không có trường mà câu hỏi cần"
 
 
@@ -30,18 +27,20 @@ class Compose(BaseModel):
 
     answer: str = Field(description="Câu trả lời tiếng Việt gửi thẳng cho người dùng.")
     verdict: str = Field(
-        description='"dat" nếu mọi ý đều truy được về một đoạn tài liệu, "thieu" nếu không.'
+        description=(
+            '"ok" nếu mọi ý đều truy được về một đoạn tài liệu, '
+            '"insufficient" nếu không.'
+        )
     )
     missing: str = Field(
-        default="", description="Còn thiếu dữ liệu gì. Rỗng khi verdict là 'dat'."
+        default="", description="Còn thiếu dữ liệu gì. Rỗng khi verdict là 'ok'."
     )
 
 
 def tool_payload(message: Any) -> dict | None:
     """Nội dung một ToolMessage -> dict, hoặc None nếu không đọc được.
 
-    `ToolNode` serialize giá trị trả về của tool thành JSON. Không đọc được thì
-    trả None chứ không đoán: nơi gọi phải tự quyết định coi đó là "có dữ liệu"
+    Trả None chứ không đoán: nơi gọi phải tự quyết định coi đó là "có dữ liệu"
     hay "không", và hai chỗ gọi đang quyết định khác nhau.
     """
     raw = message.content if isinstance(message.content, str) else str(message.content)
@@ -53,14 +52,12 @@ def tool_payload(message: Any) -> dict | None:
 
 
 def _render_rows(payload: dict) -> str:
-    """Kết quả `query_data` -> bảng chữ cho prompt.
+    """Kết quả nhánh bảng -> bảng chữ cho prompt.
 
-    Đưa dạng bảng chứ không đưa JSON thô: JSON có dấu ngoặc và tên khoá lặp
-    lại ở mọi dòng, model đọc nó tốn token gấp đôi mà không hiểu rõ hơn.
-
-    Kèm luôn câu SQL đã chạy: nó cho model biết con số này ĐƯỢC TÍNH RA chứ
-    không phải chép từ đâu — đúng cái nó cần biết để không tự thấy mình đang
-    bịa khi trả lời một câu hỏi có `SUM()`.
+    Dạng bảng chứ không phải JSON thô: JSON lặp tên khoá ở mọi dòng, model đọc
+    tốn token gấp đôi mà không hiểu rõ hơn. Kèm câu SQL đã chạy để model biết con
+    số này ĐƯỢC TÍNH RA, không phải chép từ đâu — đúng thứ nó cần để không tự
+    thấy mình đang bịa khi trả lời một câu hỏi có `SUM()`.
     """
     columns = payload.get("columns") or []
     rows = payload.get("rows") or []
@@ -78,16 +75,33 @@ def _render_rows(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def unsupported_note(payload: dict) -> str:
+    """Lời từ chối của nhánh bảng, hoặc chuỗi rỗng.
+
+    Tên KHÁC `subgraph_sql.nodes.unsupported_reason` dù cùng nói về một thứ: hàm
+    kia đọc câu TRẢ LỜI CỦA MODEL, hàm này đọc PAYLOAD đã đóng gói. Trùng tên thì
+    hai import trong cùng một file là một cái bẫy.
+
+    Đọc hai hình dạng vì payload đổi khuôn khi hai tool gộp làm một:
+      `status: "unsupported"` + `reason`         khuôn cũ, một tool một nhánh
+      `table: "unsupported"` + `table_reason`    khuôn mới, một payload hai nhánh
+    """
+    if payload.get("status") == "unsupported":
+        return str(payload.get("reason") or "").strip()
+    if payload.get("table") == "unsupported":
+        return str(payload.get("table_reason") or "").strip()
+    return ""
+
+
 def render_tool_results(tool_messages: list[Any]) -> str:
     """Mọi thứ tra được trong lượt -> một khối văn bản cho prompt của compose.
 
-    Đọc CẢ HAI hình dạng payload: `passages` của `search_docs` và `rows` của
-    `query_data`. Bỏ sót nhánh thứ hai thì `compose` soạn câu trả lời từ một
-    băng trống và kết luận "kho không có" ngay sau khi SQL vừa trả về 47 dòng.
+    BA khối rời nhau, không khối nào loại trừ khối nào: một payload có thể vừa
+    mang lời từ chối của nhánh bảng vừa mang đoạn tài liệu tra được, nên thoát
+    sớm ở khối từ chối là vứt luôn phần đang cứu được lượt hỏi đó.
 
-    Trùng đoạn thì bỏ: agent gọi tool nhiều lần cho câu hỏi nhiều ý, và các lần
-    đó hay trả về chung vài đoạn. Lặp lại một đoạn ba lần trong prompt làm model
-    tưởng nó quan trọng gấp ba.
+    Trùng đoạn thì bỏ — vòng revise tra lần thứ hai và hai lần đó hay trả về
+    chung vài đoạn.
     """
     blocks: list[str] = []
     seen: set[str] = set()
@@ -100,17 +114,13 @@ def render_tool_results(tool_messages: list[Any]) -> str:
             blocks.append(str(message.content))
             continue
 
-        # Lời TỪ CHỐI của query_data. Không dựng khối này thì payload không có
-        # `passages` lẫn `rows`, `blocks` rỗng, và compose rơi vào NO_PASSAGE —
-        # tức là trả lời "kho chưa có tài liệu nào nói về việc này" ngay sau khi
-        # tầng dưới vừa xác định được chính xác vì sao không trả lời được.
-        if payload.get("status") == "unsupported":
-            reason = str(payload.get("reason") or "").strip()
+        # Lời TỪ CHỐI của nhánh bảng. Không dựng khối này thì lý do thật ("bảng
+        # không có cột % hoàn thành") biến mất và compose rơi vào NO_PASSAGE.
+        if reason := unsupported_note(payload):
             block = f"[{UNSUPPORTED_HEAD}]\n{reason}"
             if block not in seen:
                 seen.add(block)
                 blocks.append(block)
-            continue
 
         for passage in payload.get("passages") or []:
             content = str(passage.get("content", ""))

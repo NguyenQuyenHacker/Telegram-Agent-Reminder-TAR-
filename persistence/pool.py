@@ -17,6 +17,17 @@ def get_session() -> Session:
     return Session(engine)
 
 
+def warm_up() -> None:
+    """Mở sẵn một kết nối lúc khởi động. Hàm ĐỒNG BỘ — nơi gọi bọc to_thread.
+
+    Engine này lazy: không hâm nóng thì lần connect đầu tiên — bắt tay TLS với
+    Neon, cộng thời gian đánh thức compute nếu nó đang ngủ — rơi vào giữa câu
+    hỏi ĐẦU TIÊN của người dùng và tính vào độ trễ của node `identify_project`.
+    """
+    with Session(engine) as session:
+        session.exec(text("SELECT 1"))  # type: ignore[call-overload]
+
+
 @contextmanager
 def readonly_tx(project_id: uuid.UUID) -> Iterator[Session]:
     """Session đã hạ quyền xuống `tar_ro` và chốt sẵn dự án. CHỈ dùng cho SQL
@@ -46,14 +57,24 @@ def readonly_tx(project_id: uuid.UUID) -> Iterator[Session]:
     Thứ tự không đổi được: `SET TRANSACTION READ ONLY` phải đứng trước câu lệnh
     thật đầu tiên của transaction, và `SET LOCAL ROLE` phải đứng trước nó để
     cái `statement_timeout` sau đó là của role đã hạ quyền.
+
+    Bốn lệnh đi trong MỘT lời gọi: chúng không có tham số nên psycopg gửi cả
+    khối một lượt. Tách ra là 4 round trip tới Neon trước khi câu SQL của model
+    kịp chạy — vô hình khi app ở cùng region, 400ms khi không.
     """
     with Session(engine) as session, session.begin():
-        session.exec(text("SET LOCAL ROLE tar_ro"))  # type: ignore[call-overload]
-        session.exec(text("SET TRANSACTION READ ONLY"))  # type: ignore[call-overload]
-        session.exec(text("SET LOCAL search_path = data"))  # type: ignore[call-overload]
-        session.exec(text("SET LOCAL statement_timeout = '5s'"))  # type: ignore[call-overload]
-        # Tham số hoá chứ không nối chuỗi: `project_id` đã là uuid.UUID nên
-        # không có đường tiêm, nhưng chỗ này là chỗ cuối cùng đáng để cẩn thận.
+        session.exec(  # type: ignore[call-overload]
+            text(
+                "SET LOCAL ROLE tar_ro;"
+                "SET TRANSACTION READ ONLY;"
+                "SET LOCAL search_path = data;"
+                "SET LOCAL statement_timeout = '5s'"
+            )
+        )
+        # Riêng lệnh này phải đi một mình: nó có tham số, mà psycopg chỉ gộp
+        # nhiều câu lệnh được khi không có binding nào. Tham số hoá chứ không
+        # nối chuỗi — `project_id` đã là uuid.UUID nên không có đường tiêm,
+        # nhưng đây là chỗ cuối cùng đáng để cẩn thận.
         session.exec(  # type: ignore[call-overload]
             text("SELECT set_config('app.project_id', :pid, true)"),
             params={"pid": str(project_id)},

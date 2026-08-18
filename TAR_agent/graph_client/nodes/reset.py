@@ -2,12 +2,11 @@
 
 Các khoá ngoài `messages`/`chat_history` không có reducer nên LangGraph giữ
 nguyên giá trị cũ nếu không ai ghi đè. Không dọn thì một chat từng dính
-`error="llm_failed"` mang đúng lỗi đó sang mọi lượt sau, và `verdict="thieu"`
-của lượt trước đá lượt mới ngược về agent trước khi nó kịp tra gì.
+`error="llm_failed"` mang đúng lỗi đó sang mọi lượt sau.
 
 `messages` phải dọn bằng `RemoveMessage(id=…)` TỪNG PHẦN TỬ: `add_messages` là
-reducer cộng dồn, trả `{"messages": []}` không xoá gì cả. `REMOVE_ALL_MESSAGES`
-là của bản langgraph mới hơn, KHÔNG có ở 0.2.60 (bản đang ghim).
+reducer cộng dồn. `REMOVE_ALL_MESSAGES` là của bản langgraph mới hơn, KHÔNG có ở
+0.2.60 (bản đang ghim).
 """
 
 from langchain_core.messages import RemoveMessage
@@ -20,12 +19,10 @@ def reset(state: ClientState) -> dict:
 
     Ba thứ đó là trí nhớ giữa các lượt: dọn `project_id` ở đây thì mọi tin nhắn
     cộc lốc ("còn phần điện thì sao") đều bị hỏi lại tên dự án. Việc XOÁ dự án
-    khi người dùng gõ /start hay /huy là của `identify_project`, có chủ đích,
-    không phải hệ quả của một node dọn dẹp.
+    khi người dùng gõ /start hay /huy là của `identify_project`.
     """
     return {
         "messages": [RemoveMessage(id=m.id) for m in state.get("messages", [])],
-        "tool_call_rounds": 0,
         "iteration_count": 0,
         "revise_count": 0,
         "outbox": [],
@@ -35,4 +32,11 @@ def reset(state: ClientState) -> dict:
         "answer": "",
         "reply": None,
         "remaining_question": None,
+        # `agent_action` là khoá nguy hiểm nhất ở đây: một lượt kết thúc bằng
+        # "compose" mà không dọn thì lượt sau LLM hỏng là router đọc giá trị cũ
+        # rồi đi thẳng sang compose với `evidence` của câu hỏi cũ.
+        "agent_action": "",
+        "query": "",
+        "evidence": "",
+        "outline": "",
     }

@@ -10,20 +10,15 @@
 
 Nhánh cuối là đường TỪ CHỐI: model được phép nói "bảng không có trường này" thay
 vì buộc phải nặn ra một câu SQL. Nó ra thẳng END chứ không qua `validate` — xem
-`_after_write`. Trạng thái đó đi tiếp ra ngoài bằng `unsupported`, và tool
-`query_data` dịch nó thành `status: "unsupported"`.
+`_after_write`. `tools/retrieval.py` dịch nó thành `table: "unsupported"`.
 
-KHÔNG có `list_tables` / `get_schema`. Vòng discovery của pattern SQL agent sinh
-ra cho trường hợp không biết trước schema — cắm vào một DB lạ rồi tự dò. Của ta
-ngược lại: MỘT bảng, biết từ lúc viết code, nên schema là HẰNG SỐ và dán thẳng
-vào prompt. Và vì `tar_ro` chỉ được GRANT trên đúng bảng đó, `list_tables` vốn dĩ
-luôn trả về đúng nó. Không nguy hiểm — chỉ vô ích, đổi lấy hai lượt LLM và ~2
-giây mỗi câu hỏi. Vòng đáng giữ là `repair`, và nó ánh xạ một-một với cặp
-`grade → rewrite` của subgraph tra cứu.
+KHÔNG có `list_tables` / `get_schema`: vòng discovery của pattern SQL agent sinh
+ra cho trường hợp không biết trước schema. Của ta là MỘT bảng, biết từ lúc viết
+code, nên schema dán thẳng vào prompt. Vòng đáng giữ là `repair`, ánh xạ một-một
+với cặp `grade → rewrite` của subgraph tra cứu.
 
-Dựng bằng CLASS như `SearchGraph`, compile một lần lúc import, KHÔNG checkpointer:
-đây là một phép tính bên trong một lời gọi tool, không phải một hội thoại có
-điểm dừng.
+Compile một lần lúc import, KHÔNG checkpointer: đây là một phép tính bên trong
+một lời gọi tra cứu, không phải một hội thoại có điểm dừng.
 """
 
 import asyncio
@@ -41,6 +36,7 @@ from TAR_agent.graph_client.subgraph_sql.nodes import (
 )
 from TAR_agent.graph_client.subgraph_sql.state import SqlState
 from TAR_agent.utils.config import create_google_genai, load_config, load_prompt, now_local
+from TAR_agent.utils.timing import timed_node
 from persistence.pool import readonly_tx
 
 log = logging.getLogger(__name__)
@@ -190,10 +186,12 @@ class SqlGraph:
 
     def build(self):
         builder = StateGraph(SqlState)
-        builder.add_node("gen_sql", self._gen_sql)
+        # `validate` không bọc đồng hồ: Python thuần, không LLM, không DB — đo nó
+        # chỉ thêm một dòng log 0ms vào mọi lượt.
+        builder.add_node("gen_sql", timed_node("sql.gen", self._gen_sql))
         builder.add_node("validate", self._validate)
-        builder.add_node("execute", self._execute)
-        builder.add_node("repair", self._repair)
+        builder.add_node("execute", timed_node("sql.execute", self._execute))
+        builder.add_node("repair", timed_node("sql.repair", self._repair))
 
         builder.add_edge(START, "gen_sql")
         builder.add_conditional_edges(
@@ -210,8 +208,11 @@ class SqlGraph:
         builder.add_conditional_edges(
             "repair", self._after_write, {"validate": "validate", "end": END}
         )
-        return builder.compile()
+        # `checkpointer=False` chứ không phải bỏ trống — xem chú thích cùng chỗ
+        # trong subgraph/graph.py. Hai nhánh của `retrieve_all` chạy song song TRONG
+        # một node, nên cả hai đều phải tự chối checkpointer của graph cha.
+        return builder.compile(checkpointer=False)
 
 
-# Dựng một lần lúc import. Tool `query_data` gọi lại nó ở mọi lượt.
+# Dựng một lần lúc import. `tools/retrieval.py` gọi lại nó ở mọi lượt tra.
 SQL_GRAPH = SqlGraph().build()
